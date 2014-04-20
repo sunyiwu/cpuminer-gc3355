@@ -72,50 +72,34 @@ void applog(int prio, const char *fmt, ...)
 
 	va_start(ap, fmt);
 
-#ifdef HAVE_SYSLOG_H
-	if (use_syslog) {
-		va_list ap2;
-		char *buf;
-		int len;
-		
-		va_copy(ap2, ap);
-		len = vsnprintf(NULL, 0, fmt, ap2) + 1;
-		va_end(ap2);
-		buf = alloca(len);
-		if (vsnprintf(buf, len, fmt, ap) >= 0)
-			syslog(prio, "%s", buf);
-	}
-#else
-	if (0) {}
-#endif
-	else {
-		char *f;
-		int len;
-		time_t now;
-		struct tm tm, *tm_p;
+	char *f;
+	int len;
+	time_t now;
+	struct tm tm, *tm_p;
 
-		time(&now);
+	time(&now);
 
-		pthread_mutex_lock(&applog_lock);
-		tm_p = localtime(&now);
-		memcpy(&tm, tm_p, sizeof(tm));
-		pthread_mutex_unlock(&applog_lock);
+	pthread_mutex_lock(&applog_lock);
+	tm_p = localtime(&now);
+	memcpy(&tm, tm_p, sizeof(tm));
+	pthread_mutex_unlock(&applog_lock);
 
-		len = 40 + strlen(fmt) + 2;
-		f = alloca(len);
-		sprintf(f, "[%d-%02d-%02d %02d:%02d:%02d] %s\n",
-			tm.tm_year + 1900,
-			tm.tm_mon + 1,
-			tm.tm_mday,
-			tm.tm_hour,
-			tm.tm_min,
-			tm.tm_sec,
-			fmt);
-		pthread_mutex_lock(&applog_lock);
-		vfprintf(stderr, f, ap);	/* atomic write to stderr */
-		fflush(stderr);
-		pthread_mutex_unlock(&applog_lock);
-	}
+	len = 40 + strlen(fmt) + 2;
+	f = alloca(len);
+	struct timeval  tv;
+	gettimeofday(&tv, NULL);
+	sprintf(f, "[%d-%02d-%02d %02d:%02d:%02.3lf] %s\n",
+		tm.tm_year + 1900,
+		tm.tm_mon + 1,
+		tm.tm_mday,
+		tm.tm_hour,
+		tm.tm_min,
+		tm.tm_sec + (double)(tv.tv_usec / 1000000.0),
+		fmt);
+	pthread_mutex_lock(&applog_lock);
+	vfprintf(stderr, f, ap);	/* atomic write to stderr */
+	fflush(stderr);
+	pthread_mutex_unlock(&applog_lock);
 	va_end(ap);
 }
 
@@ -308,19 +292,25 @@ json_t *json_rpc_call(CURL *curl, const char *url,
 	char curl_err_str[CURL_ERROR_SIZE];
 	long timeout = longpoll ? opt_timeout : 30;
 	struct header_info hi = {0};
-	bool lp_scanning = longpoll_scan && !have_longpoll;
+	bool lp_scanning = longpoll_scan;
 
 	/* it is assumed that 'curl' is freshly [re]initialized at this pt */
 
 	if (opt_protocol)
 		curl_easy_setopt(curl, CURLOPT_VERBOSE, 1);
 	curl_easy_setopt(curl, CURLOPT_URL, url);
-	if (opt_cert)
-		curl_easy_setopt(curl, CURLOPT_CAINFO, opt_cert);
 	curl_easy_setopt(curl, CURLOPT_ENCODING, "");
 	curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1);
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1);
 	curl_easy_setopt(curl, CURLOPT_TCP_NODELAY, 1);
+	if (getenv("http_proxy")) {
+		if (getenv("all_proxy"))
+			curl_easy_setopt(curl, CURLOPT_PROXY, getenv("all_proxy"));
+		else if (getenv("ALL_PROXY"))
+			curl_easy_setopt(curl, CURLOPT_PROXY, getenv("ALL_PROXY"));
+		else
+			curl_easy_setopt(curl, CURLOPT_PROXY, "");
+	}
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, all_data_cb);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &all_data);
 	curl_easy_setopt(curl, CURLOPT_READFUNCTION, upload_data_cb);
@@ -334,10 +324,6 @@ json_t *json_rpc_call(CURL *curl, const char *url,
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
 	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, resp_hdr_cb);
 	curl_easy_setopt(curl, CURLOPT_HEADERDATA, &hi);
-	if (opt_proxy) {
-		curl_easy_setopt(curl, CURLOPT_PROXY, opt_proxy);
-		curl_easy_setopt(curl, CURLOPT_PROXYTYPE, opt_proxy_type);
-	}
 	if (userpass) {
 		curl_easy_setopt(curl, CURLOPT_USERPWD, userpass);
 		curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
@@ -385,7 +371,6 @@ json_t *json_rpc_call(CURL *curl, const char *url,
 
 	/* If X-Long-Polling was found, activate long polling */
 	if (lp_scanning && hi.lp_path && !have_stratum) {
-		have_longpoll = true;
 		tq_push(thr_info[longpoll_thr_id].q, hi.lp_path);
 		hi.lp_path = NULL;
 	}
@@ -529,27 +514,6 @@ bool fulltest(const uint32_t *hash, const uint32_t *target)
 		}
 	}
 
-	if (opt_debug) {
-		uint32_t hash_be[8], target_be[8];
-		char *hash_str, *target_str;
-		
-		for (i = 0; i < 8; i++) {
-			be32enc(hash_be + i, hash[7 - i]);
-			be32enc(target_be + i, target[7 - i]);
-		}
-		hash_str = bin2hex((unsigned char *)hash_be, 32);
-		target_str = bin2hex((unsigned char *)target_be, 32);
-
-		applog(LOG_DEBUG, "DEBUG: %s\nHash:   %s\nTarget: %s",
-			rc ? "hash <= target"
-			   : "hash > target (false positive)",
-			hash_str,
-			target_str);
-
-		free(hash_str);
-		free(target_str);
-	}
-
 	return rc;
 }
 
@@ -664,7 +628,7 @@ char *stratum_recv_line(struct stratum_ctx *sctx)
 		time_t rstart;
 
 		time(&rstart);
-		if (!socket_full(sctx->sock, 60)) {
+		if (!socket_full(sctx->sock, 30)) {
 			applog(LOG_ERR, "stratum_recv_line timed out");
 			goto out;
 		}
@@ -761,17 +725,6 @@ bool stratum_connect(struct stratum_ctx *sctx, const char *url)
 	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, sctx->curl_err_str);
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1);
 	curl_easy_setopt(curl, CURLOPT_TCP_NODELAY, 1);
-	if (opt_proxy && opt_proxy_type != CURLPROXY_HTTP) {
-		curl_easy_setopt(curl, CURLOPT_PROXY, opt_proxy);
-		curl_easy_setopt(curl, CURLOPT_PROXYTYPE, opt_proxy_type);
-	} else if (getenv("http_proxy")) {
-		if (getenv("all_proxy"))
-			curl_easy_setopt(curl, CURLOPT_PROXY, getenv("all_proxy"));
-		else if (getenv("ALL_PROXY"))
-			curl_easy_setopt(curl, CURLOPT_PROXY, getenv("ALL_PROXY"));
-		else
-			curl_easy_setopt(curl, CURLOPT_PROXY, "");
-	}
 #if LIBCURL_VERSION_NUM >= 0x070f06
 	curl_easy_setopt(curl, CURLOPT_SOCKOPTFUNCTION, sockopt_keepalive_cb);
 #endif
@@ -1022,7 +975,7 @@ static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 	}
 
 	pthread_mutex_lock(&sctx->work_lock);
-
+	
 	coinb1_size = strlen(coinb1) / 2;
 	coinb2_size = strlen(coinb2) / 2;
 	sctx->job.coinbase_size = coinb1_size + sctx->xnonce1_size +
@@ -1034,7 +987,7 @@ static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 	if (!sctx->job.job_id || strcmp(sctx->job.job_id, job_id))
 		memset(sctx->job.xnonce2, 0, sctx->xnonce2_size);
 	hex2bin(sctx->job.xnonce2 + sctx->xnonce2_size, coinb2, coinb2_size);
-
+	
 	free(sctx->job.job_id);
 	sctx->job.job_id = strdup(job_id);
 	hex2bin(sctx->job.prevhash, prevhash, 32);
@@ -1051,11 +1004,11 @@ static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 	sctx->job.clean = clean;
 
 	sctx->job.diff = sctx->next_diff;
-
+	
 	pthread_mutex_unlock(&sctx->work_lock);
 
 	ret = true;
-
+	
 out:
 	return ret;
 }
