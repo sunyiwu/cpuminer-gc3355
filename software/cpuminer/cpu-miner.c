@@ -84,16 +84,15 @@ struct gc3355_dev {
 	unsigned long long hashes[GC3355_CHIPS];
 	double time_now[GC3355_CHIPS];
 	double time_spent[GC3355_CHIPS];
-	double prev_hashrate[GC3355_CHIPS];
 	unsigned short total_hwe[GC3355_CHIPS];
 	unsigned short hwe[GC3355_CHIPS];
-	char adjust[GC3355_CHIPS];
+	unsigned short adjust[GC3355_CHIPS];
 	unsigned short steps[GC3355_CHIPS];
 	unsigned int accepted[GC3355_CHIPS];
 	unsigned int rejected[GC3355_CHIPS];
 	double hashrate[GC3355_CHIPS];
 	unsigned long long shares[GC3355_CHIPS];
-	unsigned int last_share;
+	unsigned int last_share[GC3355_CHIPS];
 };
 
 static char *gc3355_devname = NULL;
@@ -267,7 +266,7 @@ static void share_result(int result, const char *reason, int thr_id, int chip_id
 	else
 		gc3355_devs[thr_id].rejected[chip_id]++;
 	gettimeofday(&timestr, NULL);
-	gc3355_devs[thr_id].last_share = timestr.tv_sec;
+	gc3355_devs[thr_id].last_share[chip_id] = timestr.tv_sec;
 	gc3355_devs[thr_id].shares[chip_id] += stratum.job.diff;
 	chip_hashrate = gc3355_devs[thr_id].hashrate[chip_id];
 	for(i = 0; i < opt_n_threads; i++)
@@ -519,7 +518,7 @@ static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 	unsigned char *coinbase = malloc(sctx->job.coinbase_size);
 	memcpy(coinbase, sctx->job.coinbase, sctx->job.coinbase_size);
 	unsigned char xnonce2s[4] = {xnonce2 >> 24, xnonce2 >> 16, xnonce2 >> 8, xnonce2};
-	memcpy(coinbase + 63, xnonce2s, 4);
+	memcpy(coinbase + (sctx->job.xnonce2 - sctx->job.coinbase), xnonce2s, 4);
 	memcpy(work->xnonce2, xnonce2s, 4);
 	
 	/* Generate merkle root */
@@ -749,10 +748,10 @@ read:
 					json_object_set_new(chip, API_CHIP_FREQUENCY, json_integer(gc3355_devs[i].freq[j]));
 					json_object_set_new(chip, API_CHIP_HASHRATE, json_integer(gc3355_devs[i].hashrate[j]));
 					json_object_set_new(chip, API_CHIP_SHARES, json_integer(gc3355_devs[i].shares[j]));
+					json_object_set_new(chip, API_LAST_SHARE, json_integer(gc3355_devs[i].last_share[j]));
 					json_array_append_new(chips, chip);
 				}
 				json_object_set_new(dev, API_CHIPS, chips);
-				json_object_set_new(dev, API_LAST_SHARE, json_integer(gc3355_devs[i].last_share));
 				char *path = gc3355_devs[i].devname;
 				char *base = strrchr(path, '/');
 				json_object_set_new(devs, base ? base + 1 : path, dev);

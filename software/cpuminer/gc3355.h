@@ -29,6 +29,10 @@ static char can_start = 0x0;
 #define GC3355_OVERCLOCK_MAX_HWE 5
 #define GC3355_OVERCLOCK_ADJUST_STEPS 3845
 #define GC3355_OVERCLOCK_FREQ_STEP 25
+#define GC3355_MIN_FREQ 600
+#define GC3355_MAX_FREQ 1400
+#define GC3355_HASH_SPEED 84.705882
+#define GC3355_TRESHOLD 0.98
 
 /* external functions */
 extern void scrypt_1024_1_1_256(const uint32_t *input, uint32_t *output,
@@ -161,6 +165,16 @@ static void gc3355_set_core_freq(struct gc3355_dev *gc3355, int chip_id, unsigne
 	applog(LOG_INFO, "%d@%d: Set GC3355 core frequency to %dMhz", gc3355->id, chip_id, gc3355->freq[chip_id]);
 }
 
+static unsigned short next_freq(struct gc3355_dev *gc3355, int chip_id)
+{
+	return gc3355->freq[chip_id] <= gc3355->adjust[chip_id] - GC3355_OVERCLOCK_FREQ_STEP ? gc3355->freq[chip_id] + GC3355_OVERCLOCK_FREQ_STEP : gc3355->freq[chip_id];
+}
+
+static unsigned short prev_freq(struct gc3355_dev *gc3355, int chip_id)
+{
+	return gc3355->freq[chip_id] - GC3355_OVERCLOCK_FREQ_STEP >= GC3355_MIN_FREQ ? gc3355->freq[chip_id] - GC3355_OVERCLOCK_FREQ_STEP : gc3355->freq[chip_id];
+}
+
 /*
  * miner thread
  */
@@ -173,17 +187,17 @@ static void *gc3355_thread(void *userdata)
 	unsigned char *scratchbuf = NULL;
 	int i;
 
+	struct timeval timestr;
+	gettimeofday(&timestr, NULL);
 	gc3355 = &gc3355_devs[thr_id];
 	for(i = 0; i < GC3355_CHIPS; i++)
 	{
-		gc3355->adjust[i] = 0x1;
+		gc3355->adjust[i] = GC3355_MAX_FREQ;
+		gc3355->last_share[i] = timestr.tv_sec;
 	}
 	gc3355->id = thr_id;
 	gc3355->dev_fd = -1;
 	gc3355->resend = true;
-	struct timeval timestr;
-	gettimeofday(&timestr, NULL);
-	gc3355->last_share = timestr.tv_sec;
 	
 	scratchbuf = scrypt_buffer_alloc();
 
@@ -271,8 +285,6 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, uint32_t *pdata, unsigned 
 		memcpy(bin+152, "\x12\x34\x56\x78", 4);
 		gc3355_send_cmds(gc3355, single_cmd_reset);
 		gc3355_write(gc3355, bin, 156);
-		// clear buffer
-		gc3355_gets(gc3355, (unsigned char *)rptbuf, 12);
 		gc3355->resend = false;
 		gettimeofday(&timestr, NULL);
 		time_now = timestr.tv_sec + timestr.tv_usec / 1000000.0;
@@ -281,6 +293,8 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, uint32_t *pdata, unsigned 
 			gc3355->time_now[i] = time_now;
 			gc3355->last_nonce[i] = i * (0xffffffff / GC3355_CHIPS);
 		}
+		// clear buffer
+		gc3355_gets(gc3355, (unsigned char *)rptbuf, 12);
 	}
 	
 	while((ret = gc3355_gets(gc3355, (unsigned char *)rptbuf, 12)) == 0 && !work_restart[thr_id].restart)
@@ -341,28 +355,40 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, uint32_t *pdata, unsigned 
 				gc3355->steps[chip_id] += stratum.job.diff;
 				if(gc3355->hwe[chip_id] >= GC3355_OVERCLOCK_MAX_HWE)
 				{
-					freq -= GC3355_OVERCLOCK_FREQ_STEP;
-					gc3355->adjust[chip_id] = 0x0;
+					freq = prev_freq(gc3355, chip_id);
+					gc3355->adjust[chip_id] = freq;
 				}
 				else
 				{
-					if(gc3355->hashrate[chip_id] < gc3355->prev_hashrate[chip_id])
+					if(gc3355->hashrate[chip_id] < GC3355_HASH_SPEED * freq * GC3355_TRESHOLD)
 					{
+						unsigned short prev_f = prev_freq(gc3355, chip_id);
 						if(gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS)
 						{
-							freq -= GC3355_OVERCLOCK_FREQ_STEP;
-							gc3355->adjust[chip_id] = 0x0;
+							if(prev_f != freq)
+							{
+								freq = prev_f;
+								gc3355->adjust[chip_id] = freq;
+							}
+							else
+							{
+								gc3355->hashes[chip_id] = 0;
+								gc3355->time_spent[chip_id] = 0;
+								gc3355->hwe[chip_id] = 0;
+								gc3355->steps[chip_id] = 0;
+								applog(LOG_INFO, "%d@%d: restart step counter", gc3355->id, chip_id);
+							}
 						}
 						else
-							applog(LOG_INFO, "%d@%d: %d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id], freq - GC3355_OVERCLOCK_FREQ_STEP);
+							applog(LOG_INFO, "%d@%d: %d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id], prev_f);
 					}
 					else
 					{
-						double next = ((double) (freq + GC3355_OVERCLOCK_FREQ_STEP) / freq - 1) * 0.75 + 1;
+						unsigned short next_f = next_freq(gc3355, chip_id);
 						if(gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS)
 						{
-							if(gc3355->hashrate[chip_id] >= next * gc3355->prev_hashrate[chip_id])
-								freq += GC3355_OVERCLOCK_FREQ_STEP;
+							if(next_f != freq)
+								freq = next_f;
 							else
 							{
 								gc3355->hashes[chip_id] = 0;
@@ -374,8 +400,8 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, uint32_t *pdata, unsigned 
 						}
 						else
 						{
-							if(gc3355->hashrate[chip_id] >= next * gc3355->prev_hashrate[chip_id])
-								applog(LOG_INFO, "%d@%d: %d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id], freq + GC3355_OVERCLOCK_FREQ_STEP);
+							if(next_f != freq)
+								applog(LOG_INFO, "%d@%d: %d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id], next_f);
 							else
 								applog(LOG_INFO, "%d@%d: %d steps until step counter restarts", gc3355->id, chip_id, GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id]);
 						}
@@ -385,7 +411,6 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, uint32_t *pdata, unsigned 
 				{
 					gc3355->hashes[chip_id] = 0;
 					gc3355->time_spent[chip_id] = 0;
-					gc3355->prev_hashrate[chip_id] = gc3355->hashrate[chip_id];
 					gc3355_set_core_freq(gc3355, chip_id, freq);
 					gc3355->hwe[chip_id] = 0;
 					gc3355->steps[chip_id] = 0;
@@ -445,7 +470,7 @@ static int create_gc3355_miner_threads(struct thr_info *thr_info, int opt_n_thre
 			str++;
 		}
 	}
-	freq = freq ? atoi(opt_frequency) : 600;
+	freq = freq ? atoi(opt_frequency) : GC3355_MIN_FREQ;
 	for (i = 0; i < opt_n_threads; i++)
 	{
 		thr = &thr_info[i];
