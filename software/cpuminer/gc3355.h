@@ -190,7 +190,7 @@ static void *gc3355_thread(void *userdata)
 	struct timeval timestr;
 	gettimeofday(&timestr, NULL);
 	gc3355 = &gc3355_devs[thr_id];
-	for(i = 0; i < GC3355_CHIPS; i++)
+	for(i = 0; i < opt_gc3355_chips; i++)
 	{
 		gc3355->adjust[i] = GC3355_MAX_FREQ;
 		gc3355->last_share[i] = timestr.tv_sec;
@@ -210,7 +210,7 @@ static void *gc3355_thread(void *userdata)
 	applog(LOG_INFO, "%d: Open UART device %s", thr_id, gc3355->devname);
 	
 	gc3355_send_cmds(gc3355, single_cmd_init);
-	for(i = 0; i < GC3355_CHIPS; i++)
+	for(i = 0; i < opt_gc3355_chips; i++)
 	{
 		gc3355_set_core_freq(gc3355, i, gc3355->freq[i]);
 	}
@@ -288,10 +288,10 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, uint32_t *pdata, unsigned 
 		gc3355->resend = false;
 		gettimeofday(&timestr, NULL);
 		time_now = timestr.tv_sec + timestr.tv_usec / 1000000.0;
-		for(i = 0; i < GC3355_CHIPS; i++)
+		for(i = 0; i < opt_gc3355_chips; i++)
 		{
 			gc3355->time_now[i] = time_now;
-			gc3355->last_nonce[i] = i * (0xffffffff / GC3355_CHIPS);
+			gc3355->last_nonce[i] = i * (0xffffffff / opt_gc3355_chips);
 		}
 		// clear buffer
 		gc3355_gets(gc3355, (unsigned char *)rptbuf, 12);
@@ -299,7 +299,7 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, uint32_t *pdata, unsigned 
 	
 	while((ret = gc3355_gets(gc3355, (unsigned char *)rptbuf, 12)) == 0 && !work_restart[thr_id].restart)
 	{
-		if (!memcmp(rptbuf, "\x55\x20\x00\x00", 4))
+		if (rptbuf[0] == 0x55 || rptbuf[1] == 0x20)
 		{
 			uint32_t nonce, hash[8];
 			const uint32_t Htarg = ptarget[7];
@@ -319,7 +319,7 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, uint32_t *pdata, unsigned 
 				sprintf(bin+i*2, "%02x", *(ph++));
 				
 			stop = 1;
-			chip_id = nonce / (0xffffffff / GC3355_CHIPS);
+			chip_id = nonce / (0xffffffff / opt_gc3355_chips);
 			if(work_restart[thr_id].restart || !can_work)
 			{
 				gc3355->last_nonce[chip_id] = nonce;
@@ -348,9 +348,9 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, uint32_t *pdata, unsigned 
 			if(!add_hwe)
 				gc3355->last_nonce[chip_id] = nonce;
 			else
-				gc3355->last_nonce[chip_id] = chip_id * (0xffffffff / GC3355_CHIPS);
+				gc3355->last_nonce[chip_id] = chip_id * (0xffffffff / opt_gc3355_chips);
 			gc3355->time_now[chip_id] = time_now;
-			if(opt_gc3355_autotune && gc3355->adjust[chip_id])
+			if(opt_gc3355_autotune)
 			{
 				gc3355->steps[chip_id] += stratum.job.diff;
 				if(gc3355->hwe[chip_id] >= GC3355_OVERCLOCK_MAX_HWE)
@@ -482,7 +482,7 @@ static int create_gc3355_miner_threads(struct thr_info *thr_info, int opt_n_thre
 		gc3355_devs[i].devname = strdup(pd);
 		pd = p + 1;
 
-		for(l = 0; l < GC3355_CHIPS; l++)
+		for(l = 0; l < opt_gc3355_chips; l++)
 		{
 			gc3355_devs[i].freq[l] = freq;
 		}
@@ -490,7 +490,7 @@ static int create_gc3355_miner_threads(struct thr_info *thr_info, int opt_n_thre
 		{
 			if(!strcmp(gc3355_devs[i].devname, di[j]))
 			{
-				for(l = 0; l < GC3355_CHIPS; l++)
+				for(l = 0; l < opt_gc3355_chips; l++)
 				{
 					gc3355_devs[i].freq[l] = atoi(df[j]);
 				}

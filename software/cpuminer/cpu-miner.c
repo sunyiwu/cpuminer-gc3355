@@ -60,7 +60,7 @@ static const char *algo_names[] = {
 	[ALGO_SHA256D]		= "sha256d",
 };
 
-#define GC3355_CHIPS 5
+#define GC3355_DEFAULT_CHIPS 5
 #define API_QUEUE 16
 #define API_STATS "stats"
 #define API_MINER_START_TIME "t"
@@ -79,26 +79,27 @@ struct gc3355_dev {
 	int	dev_fd;
 	bool resend;
 	char *devname;
-	unsigned short freq[GC3355_CHIPS];
-	uint32_t last_nonce[GC3355_CHIPS];
-	unsigned long long hashes[GC3355_CHIPS];
-	double time_now[GC3355_CHIPS];
-	double time_spent[GC3355_CHIPS];
-	unsigned short total_hwe[GC3355_CHIPS];
-	unsigned short hwe[GC3355_CHIPS];
-	unsigned short adjust[GC3355_CHIPS];
-	unsigned short steps[GC3355_CHIPS];
-	unsigned int accepted[GC3355_CHIPS];
-	unsigned int rejected[GC3355_CHIPS];
-	double hashrate[GC3355_CHIPS];
-	unsigned long long shares[GC3355_CHIPS];
-	unsigned int last_share[GC3355_CHIPS];
+	unsigned short *freq;
+	uint32_t *last_nonce;
+	unsigned long long *hashes;
+	double *time_now;
+	double *time_spent;
+	unsigned short *total_hwe;
+	unsigned short *hwe;
+	unsigned short *adjust;
+	unsigned short *steps;
+	unsigned int *accepted;
+	unsigned int *rejected;
+	double *hashrate;
+	unsigned long long *shares;
+	unsigned int *last_share;
 };
 
 static char *gc3355_devname = NULL;
 static char *opt_frequency = NULL;
 static char *opt_gc3355_frequency = NULL;
 static char opt_gc3355_autotune = 0x0;
+static unsigned short opt_gc3355_chips = GC3355_DEFAULT_CHIPS;
 static struct gc3355_dev *gc3355_devs;
 static unsigned int gc3355_time_start;
 
@@ -142,26 +143,27 @@ struct option {
 static char const usage[] = "\
 Usage: " PROGRAM_NAME " [OPTIONS]\n\
 Options:\n\
-  -G, --gc3355=DEV0,DEV1,...,DEVn      enable GC3355 chip mining mode (default: no)\n\
-  -F, --freq=FREQUENCY  set GC3355 core frequency in NONE dual mode (default: 600)\n\
-  -f, --gc3355-freq=DEV0:F0,DEV1:F1,...,DEVn:Fn      individual frequency setting\n\
-  -A, --gc3355-autotune  auto overclocking each GC3355 chip (default: no)\n\
-  -o, --url=URL         URL of mining server (default: " DEF_RPC_URL ")\n\
-  -O, --userpass=U:P    username:password pair for mining server\n\
-  -u, --user=USERNAME   username for mining server\n\
-  -p, --pass=PASSWORD   password for mining server\n\
-  -r, --retries=N       number of times to retry if a network call fails\n\
-                          (default: retry indefinitely)\n\
-  -R, --retry-pause=N   time to pause between retries, in seconds (default: 30)\n\
-  -T, --timeout=N       network timeout, in seconds (default: 270)\n\
-  -q, --quiet           disable per-thread hashmeter output\n\
-  -D, --debug           enable debug output\n\
-  -P, --protocol-dump   verbose dump of protocol-level activities\n\
-  -V, --version         display version information and exit\n\
-  -h, --help            display this help text and exit\n";
+  -G, --gc3355=DEV0,DEV1,...,DEVn      				enable GC3355 chip mining mode (default: no)\n\
+  -F, --freq=FREQUENCY  							set GC3355 core frequency in NONE dual mode (default: 600)\n\
+  -f, --gc3355-freq=DEV0:F0,DEV1:F1,...,DEVn:Fn		individual frequency setting\n\
+  -A, --gc3355-autotune  							auto overclocking each GC3355 chip (default: no)\n\
+  -c, --gc3355-chips=N  							# of GC3355 chips (default: 5)\n\
+  -o, --url=URL         							URL of mining server (default: " DEF_RPC_URL ")\n\
+  -O, --userpass=U:P    							username:password pair for mining server\n\
+  -u, --user=USERNAME   							username for mining server\n\
+  -p, --pass=PASSWORD   							password for mining server\n\
+  -r, --retries=N       							number of times to retry if a network call fails\n\
+													(default: retry indefinitely)\n\
+  -R, --retry-pause=N								time to pause between retries, in seconds (default: 30)\n\
+  -T, --timeout=N       							network timeout, in seconds (default: 270)\n\
+  -q, --quiet           							disable per-thread hashmeter output\n\
+  -D, --debug           							enable debug output\n\
+  -P, --protocol-dump   							verbose dump of protocol-level activities\n\
+  -V, --version         							display version information and exit\n\
+  -h, --help            							display this help text and exit\n";
 
 static char const short_options[] = 
-	"G:F:f:A"
+	"G:F:f:A:c"
 	"PDhp:qr:R:T:o:u:O:V";
 
 static struct option const options[] = {
@@ -169,6 +171,7 @@ static struct option const options[] = {
 	{ "freq", 1, NULL, 'F' },
 	{ "gc3355-freq", 1, NULL, 'f' },
 	{ "gc3355-autotune", 0, NULL, 'A' },
+	{ "gc3355-chips", 1, NULL, 'c' },
 	{ "debug", 0, NULL, 'D' },
 	{ "pass", 1, NULL, 'p' },
 	{ "quiet", 0, NULL, 'q' },
@@ -739,7 +742,7 @@ read:
 			{
 				dev = json_object();
 				chips = json_array();
-				for(j = 0; j < GC3355_CHIPS; j++)
+				for(j = 0; j < opt_gc3355_chips; j++)
 				{
 					chip = json_object();
 					json_object_set_new(chip, API_CHIP_ACCEPTED, json_integer(gc3355_devs[i].accepted[j]));
@@ -865,6 +868,9 @@ static void parse_arg (int key, char *arg)
 	case 'A':
 		opt_gc3355_autotune = 0x1;
 		break;
+	case 'c':
+		opt_gc3355_chips = atoi(arg);
+		break;
 	case 'q':
 		opt_quiet = true;
 		break;
@@ -988,6 +994,20 @@ static void clean_up()
 	{
 		gc3355_close(gc3355_devs[i].dev_fd);
 		free(gc3355_devs[i].devname);
+		free(gc3355_devs[i].freq);
+		free(gc3355_devs[i].last_nonce);
+		free(gc3355_devs[i].hashes);
+		free(gc3355_devs[i].time_now);
+		free(gc3355_devs[i].time_spent);
+		free(gc3355_devs[i].total_hwe);
+		free(gc3355_devs[i].hwe);
+		free(gc3355_devs[i].adjust);
+		free(gc3355_devs[i].steps);
+		free(gc3355_devs[i].accepted);
+		free(gc3355_devs[i].rejected);
+		free(gc3355_devs[i].hashrate);
+		free(gc3355_devs[i].shares);
+		free(gc3355_devs[i].last_share);	
 	}
 }
 
@@ -1055,6 +1075,23 @@ int main(int argc, char *argv[])
 	
 	struct gc3355_dev devs[opt_n_threads];
 	memset(&devs, 0, sizeof(devs));
+	for(i = 0; i < opt_n_threads; i++)
+	{
+		devs[i].freq = calloc(opt_gc3355_chips, sizeof(unsigned short));
+		devs[i].last_nonce = calloc(opt_gc3355_chips, sizeof(uint32_t));
+		devs[i].hashes = calloc(opt_gc3355_chips, sizeof(unsigned long long));
+		devs[i].time_now = calloc(opt_gc3355_chips, sizeof(double));
+		devs[i].time_spent = calloc(opt_gc3355_chips, sizeof(double));
+		devs[i].total_hwe = calloc(opt_gc3355_chips, sizeof(unsigned short));
+		devs[i].hwe = calloc(opt_gc3355_chips, sizeof(unsigned short));
+		devs[i].adjust = calloc(opt_gc3355_chips, sizeof(unsigned short));
+		devs[i].steps = calloc(opt_gc3355_chips, sizeof(unsigned short));
+		devs[i].accepted = calloc(opt_gc3355_chips, sizeof(unsigned int));
+		devs[i].rejected = calloc(opt_gc3355_chips, sizeof(unsigned int));
+		devs[i].hashrate = calloc(opt_gc3355_chips, sizeof(double));
+		devs[i].shares = calloc(opt_gc3355_chips, sizeof(unsigned long long));
+		devs[i].last_share = calloc(opt_gc3355_chips, sizeof(unsigned int));
+	}
 	gc3355_devs = devs;
 
 	if (!rpc_userpass) {
