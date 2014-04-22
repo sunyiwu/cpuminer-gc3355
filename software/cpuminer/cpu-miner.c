@@ -19,6 +19,9 @@
 #include <unistd.h>
 #include <sys/time.h>
 #include <time.h>
+#ifdef WIN32
+#include <windows.h>
+#else
 #include <errno.h>
 #include <signal.h>
 #include <sys/resource.h>
@@ -29,11 +32,11 @@
 #endif
 #include <sys/sysctl.h>
 #endif
+#endif
 #include <jansson.h>
 #include <curl/curl.h>
 #include "compat.h"
 #include "miner.h"
-#include <fcntl.h>
 
 #define PROGRAM_NAME		"minerd"
 #define DEF_RPC_URL		"http://127.0.0.1:9332/"
@@ -286,6 +289,7 @@ static void share_result(int result, const char *reason, int thr_id, int chip_id
 		}
 	}
 	pthread_mutex_unlock(&stats_lock);
+	#ifndef WIN32
 	applog(LOG_INFO, "%s%d@%d: %s %lu/%lu (%.2f%%) %.1lf/%.1lf/%.1lf KH/s[0m",
 		   result ? "[1;32m" : "[1;31m",
 		   thr_id, chip_id,
@@ -294,6 +298,20 @@ static void share_result(int result, const char *reason, int thr_id, int chip_id
 		   thread_accepted + thread_rejected,
 		   100. * thread_accepted / (thread_accepted + thread_rejected),
 		   chip_hashrate / 1000, thread_hashrate / 1000, hashrate / 1000);
+	#else
+	if(result)
+		set_text_color(FOREGROUND_LIGHTGREEN);
+	else
+		set_text_color(FOREGROUND_LIGHTRED);
+	applog(LOG_INFO, "%d@%d: %s %lu/%lu (%.2f%%) %.1lf/%.1lf/%.1lf KH/s",
+		   thr_id, chip_id,
+		   result ? "accepted" : "rejected",
+		   thread_accepted,
+		   thread_accepted + thread_rejected,
+		   100. * thread_accepted / (thread_accepted + thread_rejected),
+		   chip_hashrate / 1000, thread_hashrate / 1000, hashrate / 1000);
+	set_text_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+	#endif
 	if (reason)
 		applog(LOG_INFO, "DEBUG: reject reason: %s", reason);
 }
@@ -700,6 +718,7 @@ out:
 	return NULL;
 }
 
+#ifndef WIN32
 static void api_request_handler(int sock)
 {
     int i, j, read_size, read_pos, buffer_size = 256, err_size = 256;
@@ -786,7 +805,9 @@ write:
 	free(message);
 	goto read;
 }
+#endif
 
+#ifndef WIN32
 static void *api_thread(void *userdata)
 {
 	struct thr_info *mythr = userdata;
@@ -834,6 +855,7 @@ out:
 	}
 	return NULL;
 }
+#endif
 
 static void show_version_and_exit(void)
 {
@@ -1011,6 +1033,7 @@ static void clean_up()
 	}
 }
 
+#ifndef WIN32
 void signal_handler(int sig)
 {
 	switch (sig) {
@@ -1029,6 +1052,7 @@ void signal_handler(int sig)
 		break;
 	}
 }
+#endif
 
 int main(int argc, char *argv[])
 {
@@ -1049,9 +1073,11 @@ int main(int argc, char *argv[])
 	pthread_mutex_init(&stratum.sock_lock, NULL);
 	pthread_mutex_init(&stratum.work_lock, NULL);
 
+#ifndef WIN32
 	signal(SIGHUP, signal_handler);
 	signal(SIGINT, signal_handler);
 	signal(SIGTERM, signal_handler);
+#endif
 	
 	flags = strncmp(rpc_url, "https:", 6)
 	      ? (CURL_GLOBAL_ALL & ~CURL_GLOBAL_SSL)
@@ -1146,6 +1172,7 @@ int main(int argc, char *argv[])
 		if (create_gc3355_miner_threads(thr_info, opt_n_threads) != 0)
 			return 1;
 	
+#ifndef WIN32
 		/* init api thread info */
 		api_thr_id = opt_n_threads + 3;
 		thr = &thr_info[api_thr_id];
@@ -1155,6 +1182,7 @@ int main(int argc, char *argv[])
 			applog(LOG_ERR, "api thread create failed");
 			return 1;
 		}
+#endif
 	}
 
 	/* main loop - simply wait for workio thread to exit */

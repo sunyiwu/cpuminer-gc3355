@@ -8,7 +8,8 @@
  * Software Foundation; either version 2 of the License, or (at your option)
  * any later version.  See COPYING for more details.
  */
-
+ 
+#ifndef WIN32
 #include <termios.h>
 #include <time.h>
 #include <sys/types.h>
@@ -16,9 +17,60 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <errno.h>
+#else
+#define htobe16 htons
+#define htole16(x) (x)
+#define be16toh ntohs
+#define le16toh(x) (x)
+#define htobe32 htonl
+#define htole32(x) (x)
+#define be32toh ntohl
+#define le32toh(x) (x)
+#define htobe64 htonll
+#define htole64(x) (x)
+#define be64toh ntohll
+#define le64toh(x) (x)
+char* strtok_r(char *str, const char *delim, char **nextp);
+char* strtok_r(char *str, const char *delim, char **nextp)
+{
+    char *ret;
+
+    if (str == NULL)
+    {
+        str = *nextp;
+    }
+
+    str += strspn(str, delim);
+
+    if (*str == '\0')
+    {
+        return NULL;
+    }
+
+    ret = str;
+
+    str += strcspn(str, delim);
+
+    if (*str)
+    {
+        *str++ = '\0';
+    }
+
+    *nextp = str;
+
+    return ret;
+}
+#include <windows.h>
+#include <winsock2.h>
+#include <io.h>
+typedef unsigned int speed_t;
+#define  B115200  115200
+#endif
 #include <ctype.h>
 #include <gc3355-commands.h>
+#include <string.h>
 
 #define GC3355_MINER_VERSION	"v3e"
 #define GC3355_VERSION			"LightningAsic"
@@ -26,7 +78,7 @@
 static const char *gc3355_version = GC3355_MINER_VERSION;
 static char can_start = 0x0;
 
-#define GC3355_OVERCLOCK_MAX_HWE 5
+#define GC3355_OVERCLOCK_MAX_HWE 3
 #define GC3355_OVERCLOCK_ADJUST_STEPS 3845
 #define GC3355_OVERCLOCK_FREQ_STEP 25
 #define GC3355_MIN_FREQ 600
@@ -40,6 +92,17 @@ extern void scrypt_1024_1_1_256(const uint32_t *input, uint32_t *output,
 
 /* local functions */
 static int gc3355_scanhash(struct gc3355_dev *gc3355, uint32_t *pdata, unsigned char *scratchbuf, const uint32_t *ptarget, uint32_t *midstate);
+
+#ifdef WIN32
+#define FOREGROUND_CYAN 3
+#define FOREGROUND_LIGHTGREEN 10
+#define FOREGROUND_LIGHTRED 12
+static void set_text_color(WORD color)
+{
+	SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), color);
+	return;
+}
+#endif
 
 /* close UART device */
 static void gc3355_close(int fd)
@@ -59,8 +122,61 @@ static void gc3355_exit(struct gc3355_dev *gc3355)
 /* open UART device */
 static int gc3355_open(struct gc3355_dev *gc3355, speed_t baud)
 {
+#ifdef WIN32
+	DWORD	timeout = 1;
+
+	applog(LOG_INFO, "%d: open device %s", gc3355->id, gc3355->devname);
+	if (gc3355->dev_fd > 0)
+		gc3355_close(gc3355->dev_fd);
+
+	HANDLE hSerial = CreateFile(gc3355->devname, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+	if (unlikely(hSerial == INVALID_HANDLE_VALUE))
+	{
+		DWORD e = GetLastError();
+		switch (e) {
+		case ERROR_ACCESS_DENIED:
+			applog(LOG_ERR, "%d: Do not have user privileges required to open %s", gc3355->id, gc3355->devname);
+			break;
+		case ERROR_SHARING_VIOLATION:
+			applog(LOG_ERR, "%d: %s is already in use by another process", gc3355->id, gc3355->devname);
+			break;
+		default:
+			applog(LOG_DEBUG, "%d: Open %s failed, GetLastError:%u", gc3355->id, gc3355->devname, e);
+			break;
+		}
+		return -1;
+	}
+
+	// thanks to af_newbie for pointers about this
+	COMMCONFIG comCfg = {0};
+	comCfg.dwSize = sizeof(COMMCONFIG);
+	comCfg.wVersion = 1;
+	comCfg.dcb.DCBlength = sizeof(DCB);
+	comCfg.dcb.BaudRate = baud;
+	comCfg.dcb.fBinary = 1;
+	comCfg.dcb.fDtrControl = DTR_CONTROL_ENABLE;
+	comCfg.dcb.fRtsControl = RTS_CONTROL_ENABLE;
+	comCfg.dcb.ByteSize = 8;
+
+	SetCommConfig(hSerial, &comCfg, sizeof(comCfg));
+
+	// Code must specify a valid timeout value (0 means don't timeout)
+	const DWORD ctoms = (timeout * 100);
+	COMMTIMEOUTS cto = {ctoms, 0, ctoms, 0, ctoms};
+	SetCommTimeouts(hSerial, &cto);
+
+	PurgeComm(hSerial, PURGE_RXABORT);
+	PurgeComm(hSerial, PURGE_TXABORT);
+	PurgeComm(hSerial, PURGE_RXCLEAR);
+	PurgeComm(hSerial, PURGE_TXCLEAR);
+
+	gc3355->dev_fd = _open_osfhandle((intptr_t)hSerial, 0);
+	if (gc3355->dev_fd < 0)
+		return -1;
+	return 0;
+#else
 	struct termios	my_termios;
-	int i, fd;
+	int fd;
 
 	applog(LOG_INFO, "%d: open device %s", gc3355->id, gc3355->devname);
 	if (gc3355->dev_fd > 0)
@@ -99,6 +215,7 @@ static int gc3355_open(struct gc3355_dev *gc3355, speed_t baud)
 	gc3355->dev_fd = fd;
 
 	return 0;
+#endif
 }
 
 /* send data to UART */
@@ -114,6 +231,7 @@ static int gc3355_write(struct gc3355_dev *gc3355, const void *buf, size_t bufle
 	return 0;
 }
 
+#ifndef WIN32
 /* read data from UART */
 static int gc3355_gets(struct gc3355_dev *gc3355, unsigned char *buf, int read_amount)
 {
@@ -146,6 +264,36 @@ static int gc3355_gets(struct gc3355_dev *gc3355, unsigned char *buf, int read_a
 	}
 	return 0;
 }
+#else
+static int gc3355_gets(struct gc3355_dev *gc3355, unsigned char *buf, int read_count)
+{
+	int fd;
+	unsigned char	*bufhead, *p;
+	ssize_t ret = 0;
+	int rc = 0;
+	int read_amount;
+	int i;
+
+	// Read reply 1 byte at a time
+	fd = gc3355->dev_fd;
+	bufhead = buf;
+	read_amount = read_count;
+	while (true)
+	{
+		ret = read(fd, buf, 1);
+		if (ret < 0) return 1;
+		if (ret >= read_amount) return 0;
+		if (ret > 0)
+		{
+			buf += ret;
+			read_amount -= ret;
+			continue;
+		}
+		rc++;
+		if (rc >= 10) return 2;
+	}
+}
+#endif
 
 static void gc3355_send_cmds(struct gc3355_dev *gc3355, const unsigned char *cmds[])
 {
@@ -331,13 +479,25 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, uint32_t *pdata, unsigned 
 			if (hash[7] <= Htarg && fulltest(hash, ptarget))
 			{
 				add_hashes = nonce - gc3355->last_nonce[chip_id];
+#ifndef WIN32
 				applog(LOG_INFO, "%d@%d %dMHz: Got nonce %s, [1;34mHash <= Htarget![0m", gc3355->id, chip_id, freq, bin);
+#else
+				set_text_color(FOREGROUND_CYAN);
+				applog(LOG_INFO, "%d@%d %dMHz: Got nonce %s, Hash <= Htarget!", gc3355->id, chip_id, freq, bin);
+				set_text_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+#endif
 			}
 			else
 			{
 				add_hwe = 1;
 				stop = -1;
+#ifndef WIN32
 				applog(LOG_INFO, "%d@%d %dMHz: Got nonce %s, [1;35mInvalid nonce! (%d)[0m", gc3355->id, chip_id, freq, bin, gc3355->hwe[chip_id] + 1);
+#else
+				set_text_color(FOREGROUND_RED);
+				applog(LOG_INFO, "%d@%d %dMHz: Got nonce %s, Invalid nonce! (%d)", gc3355->id, chip_id, freq, bin, gc3355->hwe[chip_id] + 1);
+				set_text_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+#endif
 			}
 			pthread_mutex_lock(&stats_lock);
 			gc3355->hashes[chip_id] += add_hashes;
@@ -353,7 +513,7 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, uint32_t *pdata, unsigned 
 			if(opt_gc3355_autotune)
 			{
 				gc3355->steps[chip_id] += stratum.job.diff;
-				if(gc3355->hwe[chip_id] >= GC3355_OVERCLOCK_MAX_HWE)
+				if(gc3355->hwe[chip_id] >= GC3355_OVERCLOCK_MAX_HWE || (gc3355->hwe[chip_id] > 0 && (GC3355_OVERCLOCK_ADJUST_STEPS / 2) / stratum.job.diff >= 2 && gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS / 2 && gc3355->hashrate[chip_id] < GC3355_HASH_SPEED * freq * 0.8))
 				{
 					freq = prev_freq(gc3355, chip_id);
 					gc3355->adjust[chip_id] = freq;
