@@ -3,10 +3,13 @@ cpuminer-gc3355
 
 CPUMiner with GridSeed GC3355 support
 
-How to compile from git:
+How to compile from git (Debian-based):
 
 ```
+apt-get update
+apt-get install -y build-essential libtool libcurl4-openssl-dev libjansson-dev libudev-dev autoconf automake
 git clone https://github.com/siklon/cpuminer-gc3355
+cd cpuminer-gc3355
 ./autogen.sh
 ./configure CFLAGS="-O3"
 make
