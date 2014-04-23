@@ -157,7 +157,12 @@ static int gc3355_open(struct gc3355_dev *gc3355, speed_t baud)
 	comCfg.dcb.fDtrControl = DTR_CONTROL_ENABLE;
 	comCfg.dcb.fRtsControl = RTS_CONTROL_ENABLE;
 	comCfg.dcb.ByteSize = 8;
-
+	comCfg.dcb.fParity = 0;
+	comCfg.dcb.fOutxCtsFlow = 0;
+	comCfg.dcb.fOutxDsrFlow = 0;
+	comCfg.dcb.fOutX = 0;
+	comCfg.dcb.fInX = 0;
+	comCfg.dcb.fAbortOnError = 0;
 	SetCommConfig(hSerial, &comCfg, sizeof(comCfg));
 
 	// Code must specify a valid timeout value (0 means don't timeout)
