@@ -3,7 +3,14 @@ cpuminer-gc3355
 
 CPUMiner with GridSeed GC3355 support
 
+How to compile from git:
+
+```
+git clone https://github.com/siklon/cpuminer-gc3355
+./autogen.sh
 ./configure CFLAGS="-O3"
+make
+```
 
 GC3355-specific options:
 
@@ -38,6 +45,13 @@ goto loop
 pause
 ```
 
+Binaries
+==============
+
+Windows: https://www.dropbox.com/s/tboje3rqpeb5m2f/minerd-gc3355.exe
+
+Raspberry PI: https://www.dropbox.com/s/xc3lvysi8vtrt00/minerd-gc3355
+
 Support
 ==============
 
@@ -48,5 +62,3 @@ Support
 
 
 `DOGE: DFZ3rxAUgFspMfpZbqMzgRFFQKiT695HCo`
-
-
