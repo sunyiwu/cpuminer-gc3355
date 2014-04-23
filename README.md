@@ -48,7 +48,7 @@ pause
 Binaries
 ==============
 
-Windows: https://www.dropbox.com/s/tboje3rqpeb5m2f/minerd-gc3355.exe
+Windows: https://www.dropbox.com/s/ttqa9p851siz8oi/minerd-gc3355.zip
 
 Raspberry PI: https://www.dropbox.com/s/xc3lvysi8vtrt00/minerd-gc3355
 
