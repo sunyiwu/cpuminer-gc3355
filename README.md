@@ -37,3 +37,10 @@ minerd.exe --gc3355=\\.\COM1,\\.\COM2,\\.\COM3 --gc3355-freq=\\.\COM1:800 --gc33
 goto loop
 pause
 ```
+
+Support
+==============
+
+`BTC: 1AMsjqzXQpRunxUmtn3xzQ5cMdhV7fmet2`
+`LTC: Lc75scqhMCkpMhC3aYGPVB4BEAzHvvz2rm`
+`DOGE: DFZ3rxAUgFspMfpZbqMzgRFFQKiT695HCo`
