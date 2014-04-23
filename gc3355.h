@@ -272,33 +272,19 @@ static int gc3355_gets(struct gc3355_dev *gc3355, unsigned char *buf, int read_a
 	return 0;
 }
 #else
-static int gc3355_gets(struct gc3355_dev *gc3355, unsigned char *buf, int read_count)
+static int gc3355_gets(struct gc3355_dev *gc3355, unsigned char *buf, int read_amount)
 {
 	int fd;
 	unsigned char	*bufhead, *p;
-	ssize_t ret = 0;
-	int rc = 0;
-	int read_amount;
-	int i;
-
-	// Read reply 1 byte at a time
+	ssize_t nread = 0;
+	
 	fd = gc3355->dev_fd;
-	bufhead = buf;
-	read_amount = read_count;
-	while (true)
+	nread = read(fd, buf, read_amount);
+	if (nread != read_amount)
 	{
-		ret = read(fd, buf, 1);
-		if (ret < 0) return 1;
-		if (ret >= read_amount) return 0;
-		if (ret > 0)
-		{
-			buf += ret;
-			read_amount -= ret;
-			continue;
-		}
-		rc++;
-		if (rc >= 10) return 2;
+		return 1;
 	}
+	return 0;
 }
 #endif
 
