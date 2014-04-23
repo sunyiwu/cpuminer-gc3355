@@ -154,8 +154,10 @@ static int gc3355_open(struct gc3355_dev *gc3355, speed_t baud)
 	comCfg.dcb.DCBlength = sizeof(DCB);
 	comCfg.dcb.BaudRate = baud;
 	comCfg.dcb.fBinary = 1;
-	comCfg.dcb.fDtrControl = DTR_CONTROL_ENABLE;
-	comCfg.dcb.fRtsControl = RTS_CONTROL_ENABLE;
+	comCfg.dcb.fDtrControl = 0;
+	comCfg.dcb.fRtsControl = 0;
+	comCfg.dcb.fTXContinueOnXoff = 0;
+	comCfg.dcb.fDsrSensitivity = 0;
 	comCfg.dcb.ByteSize = 8;
 	comCfg.dcb.fParity = 0;
 	comCfg.dcb.fOutxCtsFlow = 0;
