@@ -64,6 +64,7 @@ static const char *algo_names[] = {
 };
 
 #define GC3355_DEFAULT_CHIPS 5
+#define API_DEFAUKT_PORT 4028
 #define API_QUEUE 16
 #define API_STATS "stats"
 #define API_MINER_START_TIME "t"
@@ -124,7 +125,7 @@ static int work_thr_id;
 int longpoll_thr_id = -1;
 int stratum_thr_id = -1;
 int api_thr_id = -1;
-unsigned short api_port = 4028;
+unsigned short opt_api_port = API_DEFAUKT_PORT;
 int api_sock;
 struct work_restart *work_restart = NULL;
 static struct stratum_ctx stratum;
@@ -151,6 +152,7 @@ Options:\n\
   -f, --gc3355-freq=DEV0:F0,DEV1:F1,...,DEVn:Fn		individual frequency setting\n\
   -A, --gc3355-autotune  							auto overclocking each GC3355 chip (default: no)\n\
   -c, --gc3355-chips=N  							# of GC3355 chips (default: 5)\n\
+  -a, --api-port=PORT  								set the JSON API port (default: 4028)\n\
   -o, --url=URL         							URL of mining server (default: " DEF_RPC_URL ")\n\
   -O, --userpass=U:P    							username:password pair for mining server\n\
   -u, --user=USERNAME   							username for mining server\n\
@@ -175,6 +177,7 @@ static struct option const options[] = {
 	{ "gc3355-freq", 1, NULL, 'f' },
 	{ "gc3355-autotune", 0, NULL, 'A' },
 	{ "gc3355-chips", 1, NULL, 'c' },
+	{ "api-port", 1, NULL, 'a' },
 	{ "debug", 0, NULL, 'D' },
 	{ "pass", 1, NULL, 'p' },
 	{ "quiet", 0, NULL, 'q' },
@@ -264,7 +267,7 @@ static void share_result(int result, const char *reason, int thr_id, int chip_id
 {
 	int i, j;
 	struct timeval timestr;
-	double chip_hashrate, hashrate = 0, thread_hashrate = 0;
+	double chip_hashrate, hashrate = 0, pool_hashrate = 0, thread_hashrate = 0;
 	unsigned int thread_accepted = 0, thread_rejected = 0;
 	pthread_mutex_lock(&stats_lock);
 	if(result)
@@ -280,6 +283,7 @@ static void share_result(int result, const char *reason, int thr_id, int chip_id
 		for(j = 0; j < 5; j++)
 		{
 			hashrate += gc3355_devs[i].hashrate[j];
+			pool_hashrate += gc3355_devs[i].shares[j];
 			if(i == thr_id)
 			{
 				thread_accepted += gc3355_devs[i].accepted[j];
@@ -288,28 +292,29 @@ static void share_result(int result, const char *reason, int thr_id, int chip_id
 			}
 		}
 	}
+	pool_hashrate = (1 << 16) / ((timestr.tv_sec - gc3355_time_start) / pool_hashrate);
 	pthread_mutex_unlock(&stats_lock);
 	#ifndef WIN32
-	applog(LOG_INFO, "%s%d@%d: %s %lu/%lu (%.2f%%) %.1lf/%.1lf/%.1lf KH/s[0m",
+	applog(LOG_INFO, "%s%d@%d: %s %lu/%lu (%.2f%%) %.1lf/%.1lf/%.1lf (Pool: %.1lf) KH/s[0m",
 		   result ? "[1;32m" : "[1;31m",
 		   thr_id, chip_id,
 		   result ? "accepted" : "rejected",
 		   thread_accepted,
 		   thread_accepted + thread_rejected,
 		   100. * thread_accepted / (thread_accepted + thread_rejected),
-		   chip_hashrate / 1000, thread_hashrate / 1000, hashrate / 1000);
+		   chip_hashrate / 1000, thread_hashrate / 1000, hashrate / 1000, pool_hashrate / 1000);
 	#else
 	if(result)
 		set_text_color(FOREGROUND_LIGHTGREEN);
 	else
 		set_text_color(FOREGROUND_LIGHTRED);
-	applog(LOG_INFO, "%d@%d: %s %lu/%lu (%.2f%%) %.1lf/%.1lf/%.1lf KH/s",
+	applog(LOG_INFO, "%d@%d: %s %lu/%lu (%.2f%%) %.1lf/%.1lf/%.1lf (Pool: %.1lf) KH/s",
 		   thr_id, chip_id,
 		   result ? "accepted" : "rejected",
 		   thread_accepted,
 		   thread_accepted + thread_rejected,
 		   100. * thread_accepted / (thread_accepted + thread_rejected),
-		   chip_hashrate / 1000, thread_hashrate / 1000, hashrate / 1000);
+		   chip_hashrate / 1000, thread_hashrate / 1000, hashrate / 1000, pool_hashrate / 1000);
 	set_text_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
 	#endif
 	if (reason)
@@ -494,9 +499,7 @@ static bool submit_work(struct thr_info *thr, const struct work *work_in)
 	wc->cmd = WC_SUBMIT_WORK;
 	wc->thr = thr;
 	memcpy(wc->u.work, work_in, sizeof(*work_in));
-	char *job = wc->u.work->job_id;
-	wc->u.work->job_id = malloc(strlen(job));
-	strcpy(wc->u.work->job_id, job);
+	wc->u.work->job_id = strdup(wc->u.work->job_id);
 
 	/* send solution to workio thread */
 	if (!tq_push(thr_info[work_thr_id].q, wc))
@@ -822,7 +825,7 @@ static void *api_thread(void *userdata)
     }
     server.sin_family = AF_INET;
     server.sin_addr.s_addr = INADDR_ANY;
-    server.sin_port = htons(api_port);
+    server.sin_port = htons(opt_api_port);
 	yes = 1;
 	if(setsockopt(api_sock, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) < 0)
 	{
@@ -892,6 +895,9 @@ static void parse_arg (int key, char *arg)
 		break;
 	case 'c':
 		opt_gc3355_chips = atoi(arg);
+		break;
+	case 'a':
+		opt_api_port = atoi(arg);
 		break;
 	case 'q':
 		opt_quiet = true;
