@@ -388,12 +388,12 @@ static void *gc3355_thread(void *userdata)
 	uint32_t fw_version = gc3355_get_firmware_version(gc3355);
 	applog(LOG_INFO, "%d: Firmware version: 0x%08x", thr_id, fw_version);
 	gc3355->chips = opt_gc3355_chips;
-	if(fw_version == 0x16011401 || fw_version == 0x13011401)
+	if((fw_version & 0xffff) == 0x1401)
 	{
 		gc3355->chips = 5;
 		applog(LOG_INFO, "%d: GC3355 5-chip USB-Mini Miner detected", thr_id);
 	}
-	else if(fw_version == 0x17031402)
+	else if((fw_version & 0xffff) == 0x1402)
 	{
 		gc3355->chips = 40;
 		applog(LOG_INFO, "%d: GC3355 40-chip G-Blade Miner detected", thr_id);
