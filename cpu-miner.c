@@ -81,6 +81,7 @@ static const char *algo_names[] = {
 struct gc3355_dev {
 	int	id;
 	int	dev_fd;
+	unsigned char chips;
 	bool resend;
 	char *devname;
 	unsigned short *freq;
@@ -100,7 +101,7 @@ struct gc3355_dev {
 };
 
 static char *gc3355_devname = NULL;
-static char *opt_frequency = NULL;
+static unsigned short opt_frequency = 600;
 static char *opt_gc3355_frequency = NULL;
 static char opt_gc3355_autotune = 0x0;
 static unsigned short opt_gc3355_chips = GC3355_DEFAULT_CHIPS;
@@ -147,25 +148,26 @@ struct option {
 static char const usage[] = "\
 Usage: " PROGRAM_NAME " [OPTIONS]\n\
 Options:\n\
-  -G, --gc3355=DEV0,DEV1,...,DEVn      				enable GC3355 chip mining mode (default: no)\n\
-  -F, --freq=FREQUENCY  							set GC3355 core frequency in NONE dual mode (default: 600)\n\
-  -f, --gc3355-freq=DEV0:F0,DEV1:F1,...,DEVn:Fn		individual frequency setting\n\
-  -A, --gc3355-autotune  							auto overclocking each GC3355 chip (default: no)\n\
-  -c, --gc3355-chips=N  							# of GC3355 chips (default: 5)\n\
-  -a, --api-port=PORT  								set the JSON API port (default: 4028)\n\
-  -o, --url=URL         							URL of mining server (default: " DEF_RPC_URL ")\n\
-  -O, --userpass=U:P    							username:password pair for mining server\n\
-  -u, --user=USERNAME   							username for mining server\n\
-  -p, --pass=PASSWORD   							password for mining server\n\
-  -r, --retries=N       							number of times to retry if a network call fails\n\
-													(default: retry indefinitely)\n\
-  -R, --retry-pause=N								time to pause between retries, in seconds (default: 30)\n\
-  -T, --timeout=N       							network timeout, in seconds (default: 270)\n\
-  -q, --quiet           							disable per-thread hashmeter output\n\
-  -D, --debug           							enable debug output\n\
-  -P, --protocol-dump   							verbose dump of protocol-level activities\n\
-  -V, --version         							display version information and exit\n\
-  -h, --help            							display this help text and exit\n";
+  -G, --gc3355=DEV0,DEV1,...,DEVn      					enable GC3355 chip mining mode (default: no)\n\
+  -F, --freq=FREQUENCY  								set GC3355 core frequency in NONE dual mode (default: 600)\n\
+  -f, --gc3355-freq=DEV0:F0,DEV1:F1,...,DEVn:Fn			individual frequency setting\n\
+	  --gc3355-freq=DEV0:F0:CHIP0,...,DEVn:Fn:CHIPn		individual per chip frequency setting\n\
+  -A, --gc3355-autotune  								auto overclocking each GC3355 chip (default: no)\n\
+  -c, --gc3355-chips=N  								# of GC3355 chips (default: 5)\n\
+  -a, --api-port=PORT  									set the JSON API port (default: 4028)\n\
+  -o, --url=URL         								URL of mining server (default: " DEF_RPC_URL ")\n\
+  -O, --userpass=U:P    								username:password pair for mining server\n\
+  -u, --user=USERNAME   								username for mining server\n\
+  -p, --pass=PASSWORD   								password for mining server\n\
+  -r, --retries=N       								number of times to retry if a network call fails\n\
+														(default: retry indefinitely)\n\
+  -R, --retry-pause=N									time to pause between retries, in seconds (default: 30)\n\
+  -T, --timeout=N       								network timeout, in seconds (default: 270)\n\
+  -q, --quiet           								disable per-thread hashmeter output\n\
+  -D, --debug           								enable debug output\n\
+  -P, --protocol-dump   								verbose dump of protocol-level activities\n\
+  -V, --version         								display version information and exit\n\
+  -h, --help            								display this help text and exit\n";
 
 static char const short_options[] = 
 	"G:F:f:A:c"
@@ -197,6 +199,7 @@ struct work {
 	uint32_t data[32];
 	uint32_t *target;
 	char *job_id;
+	uint32_t *work_id;
 	unsigned char xnonce2[4];
 	unsigned short thr_id;
 };
@@ -205,6 +208,8 @@ static uint32_t g_prev_target[8];
 static uint32_t g_curr_target[8];
 static char g_prev_job_id[128];
 static char g_curr_job_id[128];
+static uint32_t g_prev_work_id;
+static uint32_t g_curr_work_id;
 static char can_work = 0x1;
 
 static struct work *g_works;
@@ -566,6 +571,7 @@ static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 	work->data[31] = 0x00000280;
 	
 	work->target = g_curr_target;
+	work->work_id = &g_curr_work_id;
 	
 	free(coinbase);
 }
@@ -609,6 +615,8 @@ static void *stratum_thread(void *userdata)
 	struct thr_info *mythr = userdata;
 	char *s;
 	int i;
+	struct timeval timestr;
+	int restarted;
 	
 	stratum.url = tq_pop(mythr->q, NULL);
 	if (!stratum.url)
@@ -645,7 +653,7 @@ static void *stratum_thread(void *userdata)
 			}
 		}
 
-		int restarted = 0;
+		restarted = 0;
 		if (stratum.job.job_id &&
 		    (strcmp(stratum.job.job_id, g_curr_job_id) || !g_work_time)) {
 			applog(LOG_INFO, "New job_id: %s Diff: %d", stratum.job.job_id, (int) (stratum.job.diff));
@@ -657,15 +665,19 @@ static void *stratum_thread(void *userdata)
 			pthread_mutex_lock(&g_work_lock);
 			strcpy(g_prev_job_id, g_curr_job_id);
 			for(i = 0; i < 8; i++) g_prev_target[i] = g_curr_target[i];
+			g_prev_work_id = g_curr_work_id;
 			for(i = 0; i < opt_n_threads; i++)
 			{
 				g_works[i].job_id = g_prev_job_id;
 				g_works[i].target = g_prev_target;
+				g_works[i].work_id = &g_prev_work_id;
 			}
+			gettimeofday(&timestr, NULL);
+			g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
 			pthread_mutex_lock(&stratum.work_lock);
 			strcpy(g_curr_job_id, stratum.job.job_id);
 			diff_to_target(g_curr_target, stratum.job.diff / 65536.0);
-			applog(LOG_INFO, "Dispatching new work to GC3355 threads");
+			applog(LOG_INFO, "Dispatching new work to GC3355 threads (0x%x)", g_curr_work_id);
 			for(i = 0; i < opt_n_threads; i++)
 			{
 				stratum_gen_work(&stratum, &g_works[i]);
@@ -764,7 +776,7 @@ read:
 			{
 				dev = json_object();
 				chips = json_array();
-				for(j = 0; j < opt_gc3355_chips; j++)
+				for(j = 0; j < gc3355_devs[i].chips; j++)
 				{
 					chip = json_object();
 					json_object_set_new(chip, API_CHIP_ACCEPTED, json_integer(gc3355_devs[i].accepted[j]));
@@ -885,7 +897,7 @@ static void parse_arg (int key, char *arg)
 		gc3355_devname = strdup(arg);
 		break;
 	case 'F':
-		opt_frequency = strdup(arg);
+		opt_frequency = atoi(arg);
 		break;
 	case 'f':
 		opt_gc3355_frequency = strdup(arg);
@@ -1020,22 +1032,7 @@ static void clean_up()
 	int i;
 	for(i = 0; i < opt_n_threads; i++)
 	{
-		gc3355_close(gc3355_devs[i].dev_fd);
-		free(gc3355_devs[i].devname);
-		free(gc3355_devs[i].freq);
-		free(gc3355_devs[i].last_nonce);
-		free(gc3355_devs[i].hashes);
-		free(gc3355_devs[i].time_now);
-		free(gc3355_devs[i].time_spent);
-		free(gc3355_devs[i].total_hwe);
-		free(gc3355_devs[i].hwe);
-		free(gc3355_devs[i].adjust);
-		free(gc3355_devs[i].steps);
-		free(gc3355_devs[i].accepted);
-		free(gc3355_devs[i].rejected);
-		free(gc3355_devs[i].hashrate);
-		free(gc3355_devs[i].shares);
-		free(gc3355_devs[i].last_share);	
+		gc3355_close(gc3355_devs[i].dev_fd);	
 	}
 }
 
@@ -1107,23 +1104,6 @@ int main(int argc, char *argv[])
 	
 	struct gc3355_dev devs[opt_n_threads];
 	memset(&devs, 0, sizeof(devs));
-	for(i = 0; i < opt_n_threads; i++)
-	{
-		devs[i].freq = calloc(opt_gc3355_chips, sizeof(unsigned short));
-		devs[i].last_nonce = calloc(opt_gc3355_chips, sizeof(uint32_t));
-		devs[i].hashes = calloc(opt_gc3355_chips, sizeof(unsigned long long));
-		devs[i].time_now = calloc(opt_gc3355_chips, sizeof(double));
-		devs[i].time_spent = calloc(opt_gc3355_chips, sizeof(double));
-		devs[i].total_hwe = calloc(opt_gc3355_chips, sizeof(unsigned short));
-		devs[i].hwe = calloc(opt_gc3355_chips, sizeof(unsigned short));
-		devs[i].adjust = calloc(opt_gc3355_chips, sizeof(unsigned short));
-		devs[i].steps = calloc(opt_gc3355_chips, sizeof(unsigned short));
-		devs[i].accepted = calloc(opt_gc3355_chips, sizeof(unsigned int));
-		devs[i].rejected = calloc(opt_gc3355_chips, sizeof(unsigned int));
-		devs[i].hashrate = calloc(opt_gc3355_chips, sizeof(double));
-		devs[i].shares = calloc(opt_gc3355_chips, sizeof(unsigned long long));
-		devs[i].last_share = calloc(opt_gc3355_chips, sizeof(unsigned int));
-	}
 	gc3355_devs = devs;
 
 	if (!rpc_userpass) {
