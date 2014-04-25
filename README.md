@@ -18,14 +18,27 @@ make
 GC3355-specific options:
 
 ```
---gc3355=DEV0,DEV1,...,DEVn      			enable GC3355 chip mining mode (default: no)
---freq=FREQUENCY  							set GC3355 core frequency in NONE dual mode (default: 600)
---gc3355-freq=DEV0:F0,DEV1:F1,...,DEVn:Fn	individual frequency setting
---gc3355-autotune  							auto overclocking each GC3355 chip (default: no)
---gc3355-chips=N  							# of GC3355 chips (default: 5)
+--gc3355=DEV0,DEV1,...,DEVn      				enable GC3355 chip mining mode (default: no)
+--freq=FREQUENCY  								set GC3355 core frequency in NONE dual mode (default: 600)
+--gc3355-freq=DEV0:F0,DEV1:F1,...,DEVn:Fn		individual frequency setting
+--gc3355-freq=DEV0:F0:CHIP0,...,DEVn:Fn:CHIPn	individual per chip frequency setting
+--gc3355-autotune  								auto overclocking each GC3355 chip (default: no)
+~~--gc3355-chips=N  							# of GC3355 chips (default: 5)~~
 ```
 
-How to use with Blades: add "--gc3355-chips=40" to the command line
+Example with per chip tuned frequency setting, USB miner (ttyACM0) and G-Blade (ttyACM1, ttyACM2):
+
+```
+./minerd --gc3355=/dev/ttyACM0,/dev/ttyACM1,/dev/ttyACM2 --freq=850 --gc3355-freq=/dev/ttyACM0:900,/dev/ttyACM0:875:1,/dev/ttyACM0:875:2,/dev/ttyACM1:825,/dev/ttyACM1:1025:32,/dev/ttyACM2:825,/dev/ttyACM2:850:10
+```
+
+The syntax is:
+```
+--gc3355-freq=DEV0:F0:CHIP0,...,DEVn:Fn:CHIPn
+where n = 0,1,...,chip_count-1
+USB miner -> chip_count = 5
+G-Blade -> chip_count = 40
+```
 
 Example script with backup pools for *nix:
 
