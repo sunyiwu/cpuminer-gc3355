@@ -61,6 +61,18 @@ goto loop
 pause
 ```
 
+API
+==============
+The API is accessible on port 4028 (by default), to change the port pass --api-port=PORT
+One command is currently supported:
+```
+{"get":"stats"}\n
+```
+This will output a JSON encoded array with mining stats for each GC3355 chip.
+To translate the JSON keys, please refer to cpu-miner.c:66
+Do not forget the newline (\n), it is used to tell the API to stop reading and execute the command!
+Windows is not supported.
+
 Binaries
 ==============
 
