@@ -7,11 +7,11 @@ How to compile from git (Debian-based):
 
 ```
 apt-get update
-apt-get install -y build-essential libtool libcurl4-openssl-dev libjansson-dev libudev-dev autoconf automake
+apt-get install -y build-essential libtool libcurl4-openssl-dev libjansson-dev libudev-dev libncurses5-dev autoconf automake
 git clone https://github.com/siklon/cpuminer-gc3355
 cd cpuminer-gc3355
 ./autogen.sh
-./configure CFLAGS="-O3"
+./configure CFLAGS="-O3 -lncurses"
 make
 ```
 
@@ -23,9 +23,9 @@ GC3355-specific options:
 --gc3355-freq=DEV0:F0,DEV1:F1,...,DEVn:Fn		individual frequency setting
 --gc3355-freq=DEV0:F0:CHIP0,...,DEVn:Fn:CHIPn	individual per chip frequency setting
 --gc3355-autotune  								auto overclocking each GC3355 chip (default: no)
-~~--gc3355-chips=N  							# of GC3355 chips (default: 5)~~
 ```
 
+You do not need the set the # of chips for USB Miner or G-Blade, it is detected automatically
 Example with per chip tuned frequency setting, USB miner (ttyACM0) and G-Blade (ttyACM1, ttyACM2):
 
 ```
