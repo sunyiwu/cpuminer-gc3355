@@ -3,6 +3,7 @@
 
 #include "cpuminer-config.h"
 
+#include <curses.h>
 #include <stdbool.h>
 #include <inttypes.h>
 #include <sys/time.h>
@@ -167,6 +168,104 @@ struct work_restart {
 	char			padding[128 - sizeof(unsigned long)];
 };
 
+struct display_window
+{
+	WINDOW *win;
+	unsigned short height;
+	unsigned short width;
+	unsigned short y;
+	unsigned short x;
+};
+struct display
+{
+	struct display_window *top;
+	struct display_window *summary;
+	struct display_window *stats;
+	struct display_window *log;
+};
+extern struct display *display;
+struct log_line
+{
+	struct log_line *next;
+	char *line;
+};
+struct log_buffer
+{
+	struct log_line *head;
+	struct log_line *read;
+	int write;
+	int size;
+};
+extern struct log_buffer *log_line;
+extern struct log_buffer *log_buffer;
+extern struct log_buffer* log_buffer_init(int size);
+extern struct display_window* new_win(unsigned short height, unsigned short width, unsigned short y, unsigned short x);
+extern void del_win(struct display_window *win);
+extern void log_buffer_write(struct log_buffer *buffer, char *str, int length);
+extern char* log_buffer_read(struct log_buffer *buffer);
+extern void log_buffer_free(struct log_buffer *buffer);
+extern void log_buffer_resize(struct log_buffer *buffer, int size);
+extern void update_stats_window(struct display_window *win, char *line, double offset, int pos);
+extern bool opt_curses;
+extern bool opt_log;
+#define MIN_LOG_HEIGHT 10
+#define LOG_NAME "cpuminer-gc3355.log"
+
+#ifdef WIN32
+#ifndef ASPRINTF_H
+#define ASPRINTF_H
+#if !defined(vasprintf)
+static int vasprintf(char **s, const char *format, va_list ap)
+{
+	/* Guess we need no more than 100 bytes. */
+	int n, size = 100;
+	va_list save_ap;
+
+	if ((*s = (char*) malloc(size)) == NULL)
+		return -1;
+	while (1) {
+		/* wwork on a copy of the va_list because of a bug
+		 in the vsnprintf implementation in x86_64 libc
+		 */
+#ifdef __va_copy
+		__va_copy(save_ap, ap);
+#else
+		save_ap = ap;
+#endif
+		/* Try to print in the allocated space. */
+		n = _vsnprintf(*s, size, format, save_ap);
+		va_end(save_ap);
+		/* If that worked, return the string. */
+		if (n > -1 && n < size) {
+			return n;
+		}
+		/* Else try again with more space. */
+		if (n > -1) { /* glibc 2.1 */
+			size = n + 1; /* precisely what is needed */
+		} else { /* glibc 2.0 */
+			size *= 2; /* twice the old size */
+		}
+		if ((*s = (char*) realloc(*s, size)) == NULL) {
+			return -1;
+		}
+	}
+}
+#endif
+#if !defined(asprintf)
+static int asprintf(char **s, const char *format, ...)
+{
+	va_list vals;
+	int result;
+
+	va_start(vals, format);
+	result = vasprintf(s, format, vals);
+	va_end(vals);
+	return result;
+}
+#endif
+#endif
+#endif
+
 extern bool opt_debug;
 extern bool opt_protocol;
 extern int opt_timeout;
@@ -179,6 +278,7 @@ extern char *opt_proxy;
 extern long opt_proxy_type;
 extern bool use_syslog;
 extern pthread_mutex_t applog_lock;
+extern pthread_mutex_t tui_lock;
 extern struct thr_info *thr_info;
 extern int longpoll_thr_id;
 extern int stratum_thr_id;

@@ -11,6 +11,8 @@
 #define _GNU_SOURCE
 #include "cpuminer-config.h"
 
+#include <curses.h>
+#include "miner.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -32,7 +34,6 @@
 #include <netinet/tcp.h>
 #endif
 #include "compat.h"
-#include "miner.h"
 #include "elist.h"
 
 struct data_buffer {
@@ -66,8 +67,133 @@ struct thread_q {
 	pthread_cond_t		cond;
 };
 
+struct display_window* new_win(unsigned short height, unsigned short width, unsigned short y, unsigned short x)
+{
+	struct display_window *win = calloc(1, sizeof(struct display_window));
+	win->height = height;
+	win->width = width;
+	win->y = y;
+	win->x = x;
+	win->win = newwin(height, width, y, x);
+	return win;
+}
+
+void del_win(struct display_window *win)
+{
+	delwin(win->win);
+	free(win);
+}
+
+void update_stats_window(struct display_window *win, char *line, double offset, int pos)
+{ 
+	mvwprintw(win->win, pos, 1 + COLS * offset,  "%s", line);
+}
+
+struct log_buffer* log_buffer_init(int size)
+{
+	struct log_buffer *buffer = calloc(1, sizeof(struct log_buffer));
+	struct log_line *curr;
+	struct log_line *line;
+	int i;
+	buffer->size = size;
+	buffer->head = calloc(1, sizeof(struct log_line));
+	curr = buffer->head;
+	for(i = 1; i < size; i++)
+	{
+		line = calloc(1, sizeof(struct log_line));
+		curr->next = line;
+		curr = line;
+	}
+	curr->next = buffer->head;
+	buffer->read = buffer->head;
+	return buffer;
+}
+
+void log_buffer_resize(struct log_buffer *buffer, int size)
+{
+	if(buffer->size == size) return;
+	if(buffer->size < size)
+	{
+		struct log_line *curr;
+		struct log_line *line;
+		int i;
+		for(i = 0, curr = buffer->head; i < buffer->size - 1; i++, curr = curr->next);
+		for(i = 0; i < size - buffer->size; i++)
+		{
+			line = calloc(1, sizeof(struct log_line));
+			curr->next = line;
+			curr = line;
+		}
+		curr->next = buffer->head;
+		buffer->write = buffer->size;
+	}
+	else
+	{
+		struct log_line *curr;
+		struct log_line *line;
+		int i;
+		curr = buffer->head;
+		for(i = 0; i < buffer->size - size; i++)
+		{
+			if(curr->line != NULL)
+				free(curr->line);
+			line = curr->next;
+			free(curr);
+			curr = line;
+		}
+		buffer->head = curr;
+		buffer->read = curr;
+		for(i = 0; i < size - 1; i++, curr = curr->next);
+		curr->next = buffer->head;
+	}
+	buffer->size = size;
+}
+
+void log_buffer_write(struct log_buffer *buffer, char *str, int length)
+{
+	struct log_line *curr;
+	int i;
+	for(i = 0, curr = buffer->head; i < buffer->write; i++, curr = curr->next);
+	if(curr->line != NULL)
+	{
+		buffer->head = buffer->head->next;
+		buffer->read = buffer->read->next;
+		for(i = 0, curr = buffer->head; i < buffer->size - 1; i++, curr = curr->next);
+		free(curr->line);
+	}
+	curr->line = malloc(length + 1);
+	strncpy(curr->line, str, length);
+	curr->line[length - 1] = '\0';
+	buffer->write = (buffer->write + 1) % buffer->size;
+}
+
+char* log_buffer_read(struct log_buffer *buffer)
+{
+	struct log_line *curr = buffer->read;
+	buffer->read = buffer->read->next;
+	return curr->line;
+}
+
+void log_buffer_free(struct log_buffer *buffer)
+{
+	int i;
+	struct log_line *curr;
+	struct log_line *line;
+	for(curr = buffer->head, i = 0; i < buffer->size; i++)
+	{
+		if(curr->line != NULL)
+			free(curr->line);
+		line = curr->next;
+		free(curr);
+		curr = line;
+	}
+	free(buffer);
+}
+
 void applog(int prio, const char *fmt, ...)
 {
+	if(prio == LOG_DEBUG && !opt_debug) return;
+	
 	va_list ap;
 
 	va_start(ap, fmt);
@@ -86,19 +212,47 @@ void applog(int prio, const char *fmt, ...)
 
 	len = 40 + strlen(fmt) + 2;
 	f = alloca(len);
-	struct timeval  tv;
-	gettimeofday(&tv, NULL);
-	sprintf(f, "[%d-%02d-%02d %02d:%02d:%02.3lf] %s\n",
+	sprintf(f, "[%d-%02d-%02d %02d:%02d:%02d] %s\n",
 		tm.tm_year + 1900,
 		tm.tm_mon + 1,
 		tm.tm_mday,
 		tm.tm_hour,
 		tm.tm_min,
-		tm.tm_sec + (double)(tv.tv_usec / 1000000.0),
+		tm.tm_sec,
 		fmt);
 	pthread_mutex_lock(&applog_lock);
-	vfprintf(stderr, f, ap);	/* atomic write to stderr */
-	fflush(stderr);
+	if(opt_curses)
+	{
+		int i, j;
+		char *s;
+		vasprintf(&s, f, ap);
+		if(opt_log)
+		{
+			FILE *fp; 
+			fp = fopen(LOG_NAME, "a+");
+			vfprintf(fp, f, ap);
+			fflush(stderr);
+			fclose(fp);
+		}
+		log_buffer_write(log_buffer, s, COLS - 1);
+		free(s);
+		pthread_mutex_lock(&tui_lock);
+		for(j = 0, i = 0; j < log_buffer->size; j++)
+		{
+			s = log_buffer_read(log_buffer);
+			wmove(display->log->win, j, 0);
+			wclrtoeol(display->log->win);
+			if(s == NULL) continue;
+			mvwprintw(display->log->win, i++, 1,  "%s", s);
+		}
+		wrefresh(display->log->win);
+		pthread_mutex_unlock(&tui_lock);
+	}
+	else
+	{
+		vfprintf(stderr, f, ap);	/* atomic write to stderr */
+		fflush(stderr);
+	}
 	pthread_mutex_unlock(&applog_lock);
 	va_end(ap);
 }

@@ -34,7 +34,7 @@
 #include <string.h>
 #include <inttypes.h>
 
-static const uint32_t keypad[12] = {
+static const uint32_t _keypad[12] = {
 	0x80000000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00000280
 };
 static const uint32_t innerpad[11] = {
@@ -56,7 +56,7 @@ static inline void HMAC_SHA256_80_init(const uint32_t *key,
 
 	/* tstate is assumed to contain the midstate of key */
 	memcpy(pad, key + 16, 16);
-	memcpy(pad + 4, keypad, 48);
+	memcpy(pad + 4, _keypad, 48);
 	sha256_transform(tstate, pad, 0);
 	memcpy(ihash, tstate, 32);
 

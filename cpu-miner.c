@@ -11,6 +11,7 @@
 #include "cpuminer-config.h"
 #define _GNU_SOURCE
 
+#include <curses.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -77,6 +78,7 @@ static const char *algo_names[] = {
 #define API_CHIP_FREQUENCY "fr"
 #define API_CHIP_HASHRATE "ha"
 #define API_CHIP_SHARES "sh"
+#define REFRESH_INTERVAL 2
 
 struct gc3355_dev {
 	int	id;
@@ -91,13 +93,14 @@ struct gc3355_dev {
 	double *time_spent;
 	unsigned short *total_hwe;
 	unsigned short *hwe;
-	unsigned short *adjust;
+	short *adjust;
 	unsigned short *steps;
 	unsigned int *accepted;
 	unsigned int *rejected;
 	double *hashrate;
 	unsigned long long *shares;
 	unsigned int *last_share;
+	bool ready;
 };
 
 static char *gc3355_devname = NULL;
@@ -108,6 +111,8 @@ static unsigned short opt_gc3355_chips = GC3355_DEFAULT_CHIPS;
 static struct gc3355_dev *gc3355_devs;
 static unsigned int gc3355_time_start;
 
+bool opt_log = false;
+bool opt_curses = true;
 bool opt_debug = false;
 bool opt_protocol = false;
 bool want_stratum = true;
@@ -126,13 +131,19 @@ static int work_thr_id;
 int longpoll_thr_id = -1;
 int stratum_thr_id = -1;
 int api_thr_id = -1;
+int tui_thr_id = -1;
 unsigned short opt_api_port = API_DEFAUKT_PORT;
 int api_sock;
 struct work_restart *work_restart = NULL;
 static struct stratum_ctx stratum;
 
+struct display *display;
+struct log_buffer *log_buffer = NULL;
+time_t time_start;
+
 pthread_mutex_t applog_lock;
 pthread_mutex_t stats_lock;
+pthread_mutex_t tui_lock;
 
 #ifdef HAVE_GETOPT_LONG
 #include <getopt.h>
@@ -155,6 +166,8 @@ Options:\n\
   -A, --gc3355-autotune  								auto overclocking each GC3355 chip (default: no)\n\
   -c, --gc3355-chips=N  								# of GC3355 chips (default: 5)\n\
   -a, --api-port=PORT  									set the JSON API port (default: 4028)\n\
+  -t, --text											disable curses tui, output text\n\
+  -L, --log												file logging\n\
   -o, --url=URL         								URL of mining server (default: " DEF_RPC_URL ")\n\
   -O, --userpass=U:P    								username:password pair for mining server\n\
   -u, --user=USERNAME   								username for mining server\n\
@@ -170,7 +183,7 @@ Options:\n\
   -h, --help            								display this help text and exit\n";
 
 static char const short_options[] = 
-	"G:F:f:A:c"
+	"G:F:f:A:c:a:t:L"
 	"PDhp:qr:R:T:o:u:O:V";
 
 static struct option const options[] = {
@@ -180,6 +193,8 @@ static struct option const options[] = {
 	{ "gc3355-autotune", 0, NULL, 'A' },
 	{ "gc3355-chips", 1, NULL, 'c' },
 	{ "api-port", 1, NULL, 'a' },
+	{ "text", 0, NULL, 't' },
+	{ "log", 0, NULL, 'L' },
 	{ "debug", 0, NULL, 'D' },
 	{ "pass", 1, NULL, 'p' },
 	{ "quiet", 0, NULL, 'q' },
@@ -221,6 +236,174 @@ static bool submit_work(struct thr_info *thr, const struct work *work_in);
 /* added for GC3355 chip miner */
 #include "gc3355.h"
 /* end */
+
+static void clean_tui()
+{
+	curs_set(1);
+	del_win(display->top);
+	del_win(display->summary);
+	del_win(display->stats);
+	del_win(display->log);
+	free(display);
+	endwin();
+}
+
+static void init_tui()
+{
+	int i, log_height;
+	struct tm tm, *tm_p;
+	char **stats;
+	char *p;
+	tm_p = localtime(&time_start);
+	memcpy(&tm, tm_p, sizeof(tm));
+	initscr();
+	cbreak();
+	keypad(stdscr, TRUE);
+	noecho();
+	curs_set(0);
+	refresh();
+	display = calloc(1, sizeof(struct display));
+	display->top = new_win(2, COLS, 0, 0);
+	mvwhline(display->top->win, display->top->height - 1, 0, '=', COLS);
+	display->summary = new_win(3, COLS, display->top->height, 0);
+	mvwhline(display->summary->win, display->summary->height - 1, 0, '=', COLS);
+	display->stats = new_win(opt_n_threads + 1, COLS, display->top->height + display->summary->height, 0);
+	mvwhline(display->stats->win, display->stats->height - 1, 0, '=', COLS);
+	log_height = LINES - display->top->height - display->summary->height - display->stats->height;
+	if(log_height < MIN_LOG_HEIGHT) log_height = MIN_LOG_HEIGHT;
+	display->log = new_win(log_height, COLS, display->top->height + display->summary->height + display->stats->height, 0);
+	mvwhline(display->log->win, display->log->height - 1, 0, '=', COLS);
+	if(log_buffer == NULL)
+		log_buffer = log_buffer_init(display->log->height - 1);
+	else
+		log_buffer_resize(log_buffer, display->log->height - 1);
+	mvwprintw(display->top->win, 0, 1,  "cpuminer-gc3355 - Started: [%d-%02d-%02d %02d:%02d:%02d]",
+		tm.tm_year + 1900,
+		tm.tm_mon + 1,
+		tm.tm_mday,
+		tm.tm_hour,
+		tm.tm_min,
+		tm.tm_sec
+	);
+	wmove(display->summary->win, 0, 0);
+	wclrtoeol(display->summary->win);
+	update_stats_window(display->summary, "(5s):", 0, 0);
+	update_stats_window(display->summary, "0/0 MH/s", 0.1, 0);
+	update_stats_window(display->summary, "A:0 R:0 HW:0", 0.4, 0);
+	p = strrchr(rpc_url, '/');
+	if(p == NULL) p = rpc_url;
+	else p++;
+	stats = calloc(1, sizeof(char*));
+	asprintf(&stats[0], "Connected to %s diff %d with stratum as user %s", p, (int) stratum.job.diff, rpc_user == NULL ? rpc_userpass : rpc_user);
+	wmove(display->summary->win, 1, 0);
+	wclrtoeol(display->summary->win);
+	update_stats_window(display->summary, stats[0], 0, 1);
+	free(stats[0]);
+	for(i = 0; i < opt_n_threads; i++)
+	{
+		wmove(display->stats->win, i, 0);
+		wclrtoeol(display->stats->win);
+		asprintf(&stats[0], "GSD %d:", i);
+		update_stats_window(display->stats, stats[0], 0, i);
+		free(stats[0]);
+		update_stats_window(display->stats, "0 MHz", 0.2, i);
+		update_stats_window(display->stats, "0/0 KH/s", 0.35, i);
+		update_stats_window(display->stats, "A:0 R:0 HW:0", 0.65, i);
+	}
+	free(stats);
+	wrefresh(display->top->win);
+	wrefresh(display->summary->win);
+	wrefresh(display->stats->win);
+	wrefresh(display->log->win);
+	refresh();
+}
+
+static void resize_tui()
+{
+	pthread_mutex_lock(&tui_lock);
+	clean_tui();
+	refresh();
+    clear();
+	init_tui();
+	pthread_mutex_unlock(&tui_lock);
+}
+
+static void *tui_thread(void *userdata)
+{
+	struct thr_info *mythr = userdata;
+	char **stats = calloc(4, sizeof(char*));
+	char *p;
+	int i, j;
+	struct timeval timestr;
+	double hashrate, pool_hashrate, thread_hashrate, thread_pool_hashrate;
+	unsigned int accepted, rejected, hwe, thread_accepted, thread_rejected, thread_hwe, thread_freq;
+	while(true)
+	{
+		if(!opt_curses) break;
+		pthread_mutex_lock(&tui_lock);
+		pthread_mutex_lock(&stats_lock);
+		hashrate = pool_hashrate = accepted = rejected = hwe = 0;
+		gettimeofday(&timestr, NULL);
+		for(i = 0; i < opt_n_threads; i++)
+		{
+			thread_hashrate = thread_pool_hashrate = thread_accepted = thread_rejected = thread_hwe = thread_freq = 0;
+			if(gc3355_devs[i].ready)
+			{
+				for(j = 0; j < gc3355_devs[i].chips; j++)
+				{
+					thread_hashrate += gc3355_devs[i].hashrate[j];
+					thread_pool_hashrate += gc3355_devs[i].shares[j];
+					thread_accepted += gc3355_devs[i].accepted[j];
+					thread_rejected += gc3355_devs[i].rejected[j];
+					thread_hwe += gc3355_devs[i].total_hwe[j];
+					thread_freq += gc3355_devs[i].freq[j];
+				}
+				thread_freq /= gc3355_devs[i].chips;
+				pool_hashrate += thread_pool_hashrate;
+				thread_pool_hashrate = (1 << 16) / ((timestr.tv_sec - gc3355_time_start) / thread_pool_hashrate);
+				hashrate += thread_hashrate;
+				accepted += thread_accepted;
+				rejected += thread_rejected;
+				hwe += thread_hwe;
+			}
+			asprintf(&stats[0], "GSD %d", i);
+			asprintf(&stats[1], "%d MHz", thread_freq);
+			asprintf(&stats[2], "%.1lf/%.1lf KH/s", thread_pool_hashrate / 1000, thread_hashrate / 1000);
+			asprintf(&stats[3], "A:%d R:%d HW:%d", thread_accepted, thread_rejected, thread_hwe);
+			wmove(display->stats->win, i, 0);
+			wclrtoeol(display->stats->win);
+			update_stats_window(display->stats, stats[0], 0, i);	
+			update_stats_window(display->stats, stats[1], 0.2, i);
+			update_stats_window(display->stats, stats[2], 0.35, i);
+			update_stats_window(display->stats, stats[3], 0.65, i);
+			free(stats[0]); free(stats[1]); free(stats[2]); free(stats[3]);
+		}
+		pool_hashrate = (1 << 16) / ((timestr.tv_sec - gc3355_time_start) / pool_hashrate);
+		asprintf(&stats[0], "(%ds):", REFRESH_INTERVAL);
+		asprintf(&stats[1], "%.2lf/%.2lf MH/s", pool_hashrate / 1000000, hashrate / 1000000);
+		asprintf(&stats[2], "A:%d R:%d HW:%d", accepted, rejected, hwe);
+		wmove(display->summary->win, 0, 0);
+		wclrtoeol(display->summary->win);
+		update_stats_window(display->summary, stats[0], 0, 0);
+		update_stats_window(display->summary, stats[1], 0.1, 0);
+		update_stats_window(display->summary, stats[2], 0.4, 0);
+		free(stats[0]); free(stats[1]); free(stats[2]);
+		p = strrchr(rpc_url, '/');
+		if(p == NULL) p = rpc_url;
+		else p++;
+		asprintf(&stats[0], "Connected to %s diff %d with stratum as user %s", p, (int) stratum.job.diff, rpc_user == NULL ? rpc_userpass : rpc_user);
+		wmove(display->summary->win, 1, 0);
+		wclrtoeol(display->summary->win);
+		update_stats_window(display->summary, stats[0], 0, 1);
+		free(stats[0]);
+		pthread_mutex_unlock(&stats_lock);
+		wrefresh(display->summary->win);
+		wrefresh(display->stats->win);
+		pthread_mutex_unlock(&tui_lock);
+		sleep(REFRESH_INTERVAL);
+	}
+	return NULL;
+}
 
 static bool jobj_binary(const json_t *obj, const char *key,
 			void *buf, size_t buflen)
@@ -272,8 +455,6 @@ static void share_result(int result, const char *reason, int thr_id, int chip_id
 {
 	int i, j;
 	struct timeval timestr;
-	double chip_hashrate, hashrate = 0, pool_hashrate = 0, thread_hashrate = 0;
-	unsigned int thread_accepted = 0, thread_rejected = 0;
 	pthread_mutex_lock(&stats_lock);
 	if(result)
 		gc3355_devs[thr_id].accepted[chip_id]++;
@@ -282,46 +463,12 @@ static void share_result(int result, const char *reason, int thr_id, int chip_id
 	gettimeofday(&timestr, NULL);
 	gc3355_devs[thr_id].last_share[chip_id] = timestr.tv_sec;
 	gc3355_devs[thr_id].shares[chip_id] += stratum.job.diff;
-	chip_hashrate = gc3355_devs[thr_id].hashrate[chip_id];
-	for(i = 0; i < opt_n_threads; i++)
-	{
-		for(j = 0; j < 5; j++)
-		{
-			hashrate += gc3355_devs[i].hashrate[j];
-			pool_hashrate += gc3355_devs[i].shares[j];
-			if(i == thr_id)
-			{
-				thread_accepted += gc3355_devs[i].accepted[j];
-				thread_rejected += gc3355_devs[i].rejected[j];
-				thread_hashrate += gc3355_devs[i].hashrate[j];
-			}
-		}
-	}
-	pool_hashrate = (1 << 16) / ((timestr.tv_sec - gc3355_time_start) / pool_hashrate);
 	pthread_mutex_unlock(&stats_lock);
-	#ifndef WIN32
-	applog(LOG_INFO, "%s%d@%d: %s %lu/%lu (%.2f%%) %.1lf/%.1lf/%.1lf (Pool: %.1lf) KH/s[0m",
-		   result ? "[1;32m" : "[1;31m",
-		   thr_id, chip_id,
-		   result ? "accepted" : "rejected",
-		   thread_accepted,
-		   thread_accepted + thread_rejected,
-		   100. * thread_accepted / (thread_accepted + thread_rejected),
-		   chip_hashrate / 1000, thread_hashrate / 1000, hashrate / 1000, pool_hashrate / 1000);
-	#else
-	if(result)
-		set_text_color(FOREGROUND_LIGHTGREEN);
-	else
-		set_text_color(FOREGROUND_LIGHTRED);
-	applog(LOG_INFO, "%d@%d: %s %lu/%lu (%.2f%%) %.1lf/%.1lf/%.1lf (Pool: %.1lf) KH/s",
-		   thr_id, chip_id,
-		   result ? "accepted" : "rejected",
-		   thread_accepted,
-		   thread_accepted + thread_rejected,
-		   100. * thread_accepted / (thread_accepted + thread_rejected),
-		   chip_hashrate / 1000, thread_hashrate / 1000, hashrate / 1000, pool_hashrate / 1000);
-	set_text_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
-	#endif
+	applog(LOG_INFO, "%s %08x GSD %d@%d",
+	   result ? "Accepted" : "Rejected",
+	   gc3355_devs[thr_id].last_nonce[chip_id],
+	   thr_id, chip_id
+	);
 	if (reason)
 		applog(LOG_INFO, "DEBUG: reject reason: %s", reason);
 }
@@ -351,7 +498,7 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 		ntimestr = bin2hex((const unsigned char *)(&ntime), 4);
 		noncestr = bin2hex((const unsigned char *)(&nonce), 4);
 		xnonce2str = bin2hex(work->xnonce2, 4);
-		int chip_id = work->data[19] / (0xffffffff / 5);
+		int chip_id = work->data[19] / (0xffffffff / gc3355_devs[work->thr_id].chips);
 		sprintf(s,
 			"{\"method\": \"mining.submit\", \"params\": [\"%s\", \"%s\", \"%s\", \"%s\", \"%s\"], \"id\":%d}",
 			rpc_user, work->job_id, xnonce2str, ntimestr, noncestr, chip_id << 8 | work->thr_id);
@@ -661,8 +808,9 @@ static void *stratum_thread(void *userdata)
 			{
 				applog(LOG_INFO, "Stratum detected new block");
 			}
-			restart_threads();
 			pthread_mutex_lock(&g_work_lock);
+			pthread_mutex_unlock(&stratum.work_lock);
+			restart_threads();
 			strcpy(g_prev_job_id, g_curr_job_id);
 			for(i = 0; i < 8; i++) g_prev_target[i] = g_curr_target[i];
 			g_prev_work_id = g_curr_work_id;
@@ -674,21 +822,20 @@ static void *stratum_thread(void *userdata)
 			}
 			gettimeofday(&timestr, NULL);
 			g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
-			pthread_mutex_lock(&stratum.work_lock);
 			strcpy(g_curr_job_id, stratum.job.job_id);
 			diff_to_target(g_curr_target, stratum.job.diff / 65536.0);
-			applog(LOG_INFO, "Dispatching new work to GC3355 threads (0x%x)", g_curr_work_id);
+			applog(LOG_DEBUG, "Dispatching new work to GC3355 threads (0x%x)", g_curr_work_id);
 			for(i = 0; i < opt_n_threads; i++)
 			{
 				stratum_gen_work(&stratum, &g_works[i]);
 			}
-			pthread_mutex_unlock(&stratum.work_lock);
 			time(&g_work_time);
 			restarted = 1;
+			pthread_mutex_unlock(&stratum.work_lock);
 			pthread_mutex_unlock(&g_work_lock);
 		}
 		
-		if (!stratum_socket_full(&stratum, 120)) {
+		if (!stratum_socket_full(&stratum, 60)) {
 			applog(LOG_ERR, "Stratum connection timed out");
 			s = NULL;
 		} else
@@ -705,14 +852,18 @@ static void *stratum_thread(void *userdata)
 			if(stratum.job.diff != stratum.next_diff && stratum.next_diff > 0)
 			{
 				applog(LOG_INFO, "Stratum difficulty changed");
-				restart_threads();
 				pthread_mutex_lock(&g_work_lock);
+				pthread_mutex_lock(&stratum.work_lock);
+				restart_threads();
 				for(i = 0; i < 8; i++) g_prev_target[i] = g_curr_target[i];
+				g_prev_work_id = g_curr_work_id;
 				for(i = 0; i < opt_n_threads; i++)
 				{
 					g_works[i].target = g_prev_target;
+					g_works[i].work_id = &g_prev_work_id;
 				}
-				pthread_mutex_unlock(&stratum.work_lock);
+				gettimeofday(&timestr, NULL);
+				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
 				stratum.job.diff = stratum.next_diff;
 				diff_to_target(g_curr_target, stratum.job.diff / 65536.0);
 				applog(LOG_INFO, "Dispatching new work to GC3355 threads");
@@ -911,6 +1062,14 @@ static void parse_arg (int key, char *arg)
 	case 'a':
 		opt_api_port = atoi(arg);
 		break;
+	case 't':
+		opt_curses = false;
+		break;
+	case 'L':
+		opt_log = true;
+		FILE* fp = fopen(LOG_NAME, "w+");
+		fclose(fp);
+		break;
 	case 'q':
 		opt_quiet = true;
 		break;
@@ -1028,6 +1187,11 @@ static void parse_cmdline(int argc, char *argv[])
 
 static void clean_up()
 {
+	pthread_mutex_lock(&tui_lock);
+	opt_curses = false;
+	clean_tui();
+	pthread_mutex_unlock(&tui_lock);
+    clear();
 	close(api_sock);
 	int i;
 	for(i = 0; i < opt_n_threads; i++)
@@ -1041,17 +1205,26 @@ void signal_handler(int sig)
 {
 	switch (sig) {
 	case SIGHUP:
-		applog(LOG_INFO, "SIGHUP received");
+		applog(LOG_DEBUG, "SIGHUP received");
 		break;
 	case SIGINT:
 		clean_up();
-		applog(LOG_INFO, "SIGINT received, exiting");
+		applog(LOG_DEBUG, "SIGINT received, exiting");
 		exit(0);
 		break;
 	case SIGTERM:
 		clean_up();
-		applog(LOG_INFO, "SIGTERM received, exiting");
+		applog(LOG_DEBUG, "SIGTERM received, exiting");
 		exit(0);
+		break;
+	case SIGSEGV:
+		clean_up();
+		applog(LOG_DEBUG, "SIGSEGV received, exiting");
+		exit(0);
+		break;
+	case SIGWINCH:
+		resize_tui();
+		applog(LOG_DEBUG, "SIGWINCH received");
 		break;
 	}
 }
@@ -1062,6 +1235,8 @@ int main(int argc, char *argv[])
 	struct thr_info *thr;
 	long flags;
 	int i;
+	
+	time(&time_start);
 
 	rpc_url = strdup(DEF_RPC_URL);
 	rpc_user = strdup("");
@@ -1072,6 +1247,7 @@ int main(int argc, char *argv[])
 
 	pthread_mutex_init(&applog_lock, NULL);
 	pthread_mutex_init(&stats_lock, NULL);
+	pthread_mutex_init(&tui_lock, NULL);
 	pthread_mutex_init(&g_work_lock, NULL);
 	pthread_mutex_init(&stratum.sock_lock, NULL);
 	pthread_mutex_init(&stratum.work_lock, NULL);
@@ -1080,6 +1256,8 @@ int main(int argc, char *argv[])
 	signal(SIGHUP, signal_handler);
 	signal(SIGINT, signal_handler);
 	signal(SIGTERM, signal_handler);
+	signal(SIGSEGV, signal_handler);
+	signal(SIGWINCH, signal_handler);
 #endif
 	
 	flags = strncmp(rpc_url, "https:", 6)
@@ -1102,6 +1280,9 @@ int main(int argc, char *argv[])
 		opt_n_threads = nn;
 	}
 	
+	if(opt_curses)
+		init_tui();
+
 	struct gc3355_dev devs[opt_n_threads];
 	memset(&devs, 0, sizeof(devs));
 	gc3355_devs = devs;
@@ -1117,7 +1298,7 @@ int main(int argc, char *argv[])
 	if (!work_restart)
 		return 1;
 
-	thr_info = calloc(opt_n_threads + 4, sizeof(*thr));
+	thr_info = calloc(opt_n_threads + 5, sizeof(*thr));
 	if (!thr_info)
 		return 1;
 
@@ -1169,6 +1350,19 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 #endif
+	}
+
+	if(opt_curses)
+	{
+		/* init tui thread info */
+		tui_thr_id = opt_n_threads + 4;
+		thr = &thr_info[tui_thr_id];
+		thr->id = tui_thr_id;
+		/* start api thread */
+		if (unlikely(pthread_create(&thr->pth, NULL, tui_thread, thr))) {
+			applog(LOG_ERR, "tui thread create failed");
+			return 1;
+		}
 	}
 
 	/* main loop - simply wait for workio thread to exit */

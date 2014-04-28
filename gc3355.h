@@ -109,17 +109,6 @@ extern void scrypt_1024_1_1_256(const uint32_t *input, uint32_t *output,
 /* local functions */
 static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigned char *scratchbuf, uint32_t *midstate);
 
-#ifdef WIN32
-#define FOREGROUND_CYAN 3
-#define FOREGROUND_LIGHTGREEN 10
-#define FOREGROUND_LIGHTRED 12
-static void set_text_color(WORD color)
-{
-	SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), color);
-	return;
-}
-#endif
-
 /* close UART device */
 static void gc3355_close(int fd)
 {
@@ -205,7 +194,7 @@ static int gc3355_open(struct gc3355_dev *gc3355, speed_t baud)
 	if (gc3355->dev_fd > 0)
 		gc3355_close(gc3355->dev_fd);
 
-    fd = open(gc3355->devname, O_RDWR | O_NOCTTY | O_SYNC);
+    fd = open(gc3355->devname, O_RDWR | O_CLOEXEC | O_NOCTTY | O_SYNC);
 	if (fd < 0) {
 		if (errno == EACCES)
 			applog(LOG_ERR, "%d: Do not have user privileges to open %s", gc3355->id, gc3355->devname);
@@ -449,6 +438,7 @@ static void *gc3355_thread(void *userdata)
 	rc = 0;
 	uint32_t midstate[8];
 	can_start++;
+	gc3355->ready = true;
 	if(can_start == opt_n_threads)
 	{
 		for(dev_freq_curr = dev_freq_root; dev_freq_curr != NULL;)
@@ -507,7 +497,7 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 {
 	uint32_t *pdata = work->data;
 	const uint32_t *ptarget = work->target;
-	int ret, i;
+	int i;
 	unsigned char *ph;
 	int thr_id = gc3355->id;
 	unsigned char rptbuf[12];
@@ -551,7 +541,7 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 		}
 	}
 	
-	while((ret = gc3355_gets(gc3355, (unsigned char *)rptbuf, 12)) == 0 && !work_restart[thr_id].restart)
+	while(!work_restart[thr_id].restart && !gc3355_gets(gc3355, (unsigned char *)rptbuf, 12) && !work_restart[thr_id].restart)
 	{
 		if (rptbuf[0] == 0x55 || rptbuf[1] == 0x20)
 		{
@@ -578,7 +568,15 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			chip_id = nonce / (0xffffffff / gc3355->chips);
 			if(work_restart[thr_id].restart || !can_work)
 			{
+				applog(LOG_DEBUG, "%d@%d: Scanhash restart requested", gc3355->id, chip_id);
 				gc3355->last_nonce[chip_id] = nonce;
+				break;
+			}
+			if(work_id != g_curr_work_id)
+			{
+				applog(LOG_DEBUG, "%d@%d: Work_id differs (%08x != %08x), restarting scanhash", gc3355->id, chip_id, work_id, g_curr_work_id);
+				gc3355->last_nonce[chip_id] = nonce;
+				work_restart[thr_id].restart = 1;
 				break;
 			}
 			gettimeofday(&timestr, NULL);
@@ -587,25 +585,13 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			if (hash[7] <= Htarg && fulltest(hash, ptarget))
 			{
 				add_hashes = nonce - gc3355->last_nonce[chip_id];
-#ifndef WIN32
-				applog(LOG_INFO, "%d@%d %dMHz: Got nonce %s, [1;34mHash <= Htarget![0m (0x%x)", gc3355->id, chip_id, freq, bin, work_id);
-#else
-				set_text_color(FOREGROUND_CYAN);
-				applog(LOG_INFO, "%d@%d %dMHz: Got nonce %s, Hash <= Htarget! (0x%x)", gc3355->id, chip_id, freq, bin, work_id);
-				set_text_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
-#endif
+				applog(LOG_DEBUG, "%d@%d %dMHz: Got nonce %s, Hash <= Htarget! (0x%x)", gc3355->id, chip_id, freq, bin, work_id);
 			}
 			else
 			{
 				add_hwe = 1;
 				stop = -1;
-#ifndef WIN32
-				applog(LOG_INFO, "%d@%d %dMHz: Got nonce %s, [1;35mInvalid nonce! (%d)[0m (0x%x)", gc3355->id, chip_id, freq, bin, gc3355->hwe[chip_id] + 1, work_id);
-#else
-				set_text_color(FOREGROUND_RED);
-				applog(LOG_INFO, "%d@%d %dMHz: Got nonce %s, Invalid nonce! (%d) (0x%x)", gc3355->id, chip_id, freq, bin, gc3355->hwe[chip_id] + 1, work_id);
-				set_text_color(FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
-#endif
+				applog(LOG_DEBUG, "%d@%d %dMHz: Got nonce %s, Invalid nonce! (%d) (0x%x) (%02x%02x%02x%02x%02x%02x)", gc3355->id, chip_id, freq, bin, gc3355->hwe[chip_id] + 1, work_id, rptbuf[0], rptbuf[1], rptbuf[2], rptbuf[3], rptbuf[4], rptbuf[5]);
 			}
 			pthread_mutex_lock(&stats_lock);
 			gc3355->hashes[chip_id] += add_hashes;
@@ -618,7 +604,7 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			else
 				gc3355->last_nonce[chip_id] = chip_id * (0xffffffff / gc3355->chips);
 			gc3355->time_now[chip_id] = time_now;
-			if(opt_gc3355_autotune)
+			if(opt_gc3355_autotune && gc3355->adjust[chip_id] > 0)
 			{
 				gc3355->steps[chip_id] += stratum.job.diff;
 				if(gc3355->hwe[chip_id] >= GC3355_OVERCLOCK_MAX_HWE || (gc3355->hwe[chip_id] > 0 && (GC3355_OVERCLOCK_ADJUST_STEPS / 2) / stratum.job.diff >= 2 && gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS / 2 && gc3355->hashrate[chip_id] < GC3355_HASH_SPEED * freq * 0.8))
@@ -640,15 +626,12 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 							}
 							else
 							{
-								gc3355->hashes[chip_id] = 0;
-								gc3355->time_spent[chip_id] = 0;
-								gc3355->hwe[chip_id] = 0;
-								gc3355->steps[chip_id] = 0;
-								applog(LOG_INFO, "%d@%d: restart step counter", gc3355->id, chip_id);
+								gc3355->adjust[chip_id] = -1;
+								applog(LOG_DEBUG, "%d@%d: autotune stopped", gc3355->id, chip_id);
 							}
 						}
 						else
-							applog(LOG_INFO, "%d@%d: %d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id], prev_f);
+							applog(LOG_DEBUG, "%d@%d: %d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id], prev_f);
 					}
 					else
 					{
@@ -659,19 +642,16 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 								freq = next_f;
 							else
 							{
-								gc3355->hashes[chip_id] = 0;
-								gc3355->time_spent[chip_id] = 0;
-								gc3355->hwe[chip_id] = 0;
-								gc3355->steps[chip_id] = 0;
-								applog(LOG_INFO, "%d@%d: restart step counter", gc3355->id, chip_id);
+								gc3355->adjust[chip_id] = -1;
+								applog(LOG_DEBUG, "%d@%d: autotune stopped", gc3355->id, chip_id);
 							}
 						}
 						else
 						{
 							if(next_f != freq)
-								applog(LOG_INFO, "%d@%d: %d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id], next_f);
+								applog(LOG_DEBUG, "%d@%d: %d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id], next_f);
 							else
-								applog(LOG_INFO, "%d@%d: %d steps until step counter restarts", gc3355->id, chip_id, GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id]);
+								applog(LOG_DEBUG, "%d@%d: %d steps until autotune stops", gc3355->id, chip_id, GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id]);
 						}
 					}
 				}
