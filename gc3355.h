@@ -284,7 +284,12 @@ static int gc3355_gets(struct gc3355_dev *gc3355, unsigned char *buf, int read_a
 	ssize_t nread = 0;
 	
 	fd = gc3355->dev_fd;
+	memset(buf, 0, read_amount);
 	nread = read(fd, buf, read_amount);
+	if(nread == 0)
+	{
+		return 0;
+	}
 	if (nread != read_amount)
 	{
 		return 1;
@@ -667,6 +672,9 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			pthread_mutex_unlock(&stats_lock);
 			return stop;
 		}
+#ifdef WIN32
+		usleep(100000);
+#endif
 	}
 	return 0;
 }
