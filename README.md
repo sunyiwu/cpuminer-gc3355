@@ -11,7 +11,7 @@ apt-get install -y build-essential libtool libcurl4-openssl-dev libjansson-dev l
 git clone https://github.com/siklon/cpuminer-gc3355
 cd cpuminer-gc3355
 ./autogen.sh
-./configure CFLAGS="-O3 -lncurses"
+./configure CFLAGS="-O3"
 make
 ```
 

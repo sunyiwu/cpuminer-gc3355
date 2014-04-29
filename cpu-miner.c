@@ -1187,11 +1187,14 @@ static void parse_cmdline(int argc, char *argv[])
 
 static void clean_up()
 {
-	pthread_mutex_lock(&tui_lock);
-	opt_curses = false;
-	clean_tui();
-	pthread_mutex_unlock(&tui_lock);
-    clear();
+	if(opt_curses)
+	{
+		pthread_mutex_lock(&tui_lock);
+		opt_curses = false;
+		clean_tui();
+		pthread_mutex_unlock(&tui_lock);
+		clear();
+	}
 	close(api_sock);
 	int i;
 	for(i = 0; i < opt_n_threads; i++)
