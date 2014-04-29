@@ -339,6 +339,11 @@ static void gc3355_set_core_freq(struct gc3355_dev *gc3355, int chip_id, unsigne
 	applog(LOG_INFO, "%d@%d: Set GC3355 core frequency to %dMhz", gc3355->id, chip_id, gc3355->freq[chip_id]);
 }
 
+static unsigned short fix_freq(unsigned short freq)
+{
+	return freq >= GC3355_MIN_FREQ ? (freq < GC3355_MAX_FREQ ? freq : GC3355_MAX_FREQ) : GC3355_MIN_FREQ;
+}
+
 static unsigned short next_freq(struct gc3355_dev *gc3355, int chip_id)
 {
 	return gc3355->freq[chip_id] <= gc3355->adjust[chip_id] - GC3355_OVERCLOCK_FREQ_STEP ? gc3355->freq[chip_id] + GC3355_OVERCLOCK_FREQ_STEP : gc3355->freq[chip_id];
@@ -415,7 +420,7 @@ static void *gc3355_thread(void *userdata)
 	{
 		gc3355->adjust[i] = GC3355_MAX_FREQ;
 		gc3355->last_share[i] = timestr.tv_sec;
-		gc3355->freq[i] = opt_frequency;
+		gc3355->freq[i] = fix_freq(opt_frequency);
 	}
 	
 	for(dev_freq_curr = dev_freq_root; dev_freq_curr != NULL; dev_freq_curr = dev_freq_curr->next)
@@ -426,9 +431,9 @@ static void *gc3355_thread(void *userdata)
 			{
 				if(chip_freq_curr->chip_id == -1)
 				{
-					for(i = 0; i < gc3355->chips; i++) gc3355->freq[i] = chip_freq_curr->freq;
+					for(i = 0; i < gc3355->chips; i++) gc3355->freq[i] = fix_freq(chip_freq_curr->freq);
 				}
-				else gc3355->freq[chip_freq_curr->chip_id] = chip_freq_curr->freq;
+				else gc3355->freq[chip_freq_curr->chip_id] = fix_freq(chip_freq_curr->freq);
 				if(chip_freq_curr->next == NULL) break;
 			}
 		}

@@ -224,19 +224,18 @@ void applog(int prio, const char *fmt, ...)
 	if(opt_curses)
 	{
 		int i, j;
-		char *s;
-		vasprintf(&s, f, ap);
 		if(opt_log)
 		{
 			FILE *fp; 
 			fp = fopen(LOG_NAME, "a+");
 			vfprintf(fp, f, ap);
-			fflush(stderr);
 			fclose(fp);
 		}
+		pthread_mutex_lock(&tui_lock);
+		char *s;
+		vasprintf(&s, f, ap);
 		log_buffer_write(log_buffer, s, COLS - 1);
 		free(s);
-		pthread_mutex_lock(&tui_lock);
 		for(j = 0, i = 0; j < log_buffer->size; j++)
 		{
 			s = log_buffer_read(log_buffer);

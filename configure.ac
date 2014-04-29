@@ -96,7 +96,32 @@ AC_CHECK_LIB([pthread], [pthread_create], PTHREAD_LIBS="-lpthread",
       AC_CHECK_LIB([pthreadGC], [pthread_create], PTHREAD_LIBS="-lpthreadGC"
 ))))
 
+curses="auto"
+
+AC_ARG_WITH([curses],
+	[AC_HELP_STRING([--without-curses],[Compile support for curses TUI (default enabled)])],
+	[curses=$withval]
+	)
+if test "x$curses" = "xno"; then
+	cursesmsg='User specified --without-curses. TUI support DISABLED'
+else
+	AC_SEARCH_LIBS(addstr, ncurses pdcurses, [
+		curses=yes
+		cursesmsg="FOUND: ${ac_cv_search_addstr}"
+		AC_DEFINE([HAVE_CURSES], [1], [Defined to 1 if curses TUI support is wanted])
+	], [
+		if test "x$curses" = "xyes"; then
+			AC_MSG_ERROR([Could not find curses library - please install libncurses-dev or pdcurses-dev (or configure --without-curses)])
+		else
+			AC_MSG_WARN([Could not find curses library - if you want a TUI, install libncurses-dev or pdcurses-dev])
+			curses=no
+			cursesmsg='NOT FOUND. TUI support DISABLED'
+		fi
+	])
+fi
+
 AM_CONDITIONAL([WANT_JANSSON], [test x$request_jansson = xtrue])
+AM_CONDITIONAL([HAVE_CURSES], [test x$curses = xyes])
 AM_CONDITIONAL([HAVE_WINDOWS], [test x$have_win32 = xtrue])
 AM_CONDITIONAL([ARCH_x86], [test x$have_x86 = xtrue])
 AM_CONDITIONAL([ARCH_x86_64], [test x$have_x86_64 = xtrue])
@@ -116,6 +141,8 @@ AC_SUBST(JANSSON_LIBS)
 AC_SUBST(PTHREAD_FLAGS)
 AC_SUBST(PTHREAD_LIBS)
 AC_SUBST(WS2_LIBS)
+AC_SUBST(NCURSES_LIBS)
+AC_SUBST(PDCURSES_LIBS)
 
 AC_CONFIG_FILES([
 	Makefile
