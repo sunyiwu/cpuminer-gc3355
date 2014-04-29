@@ -171,8 +171,12 @@ struct work_restart {
 struct display_window
 {
 	WINDOW *win;
+	unsigned int rows;
+	unsigned int cols;
 	unsigned short height;
 	unsigned short width;
+	unsigned int py;
+	unsigned int px;
 	unsigned short y;
 	unsigned short x;
 };
@@ -184,32 +188,15 @@ struct display
 	struct display_window *log;
 };
 extern struct display *display;
-struct log_line
-{
-	struct log_line *next;
-	char *line;
-};
-struct log_buffer
-{
-	struct log_line *head;
-	struct log_line *read;
-	int write;
-	int size;
-};
-extern struct log_buffer *log_line;
-extern struct log_buffer *log_buffer;
-extern struct log_buffer* log_buffer_init(int size);
 extern struct display_window* new_win(unsigned short height, unsigned short width, unsigned short y, unsigned short x);
+extern struct display_window* new_pad(unsigned int rows, unsigned int cols, unsigned short height, unsigned short width, unsigned short y, unsigned short x);
 extern void del_win(struct display_window *win);
-extern void log_buffer_write(struct log_buffer *buffer, char *str, int length);
-extern char* log_buffer_read(struct log_buffer *buffer);
-extern void log_buffer_free(struct log_buffer *buffer);
-extern void log_buffer_resize(struct log_buffer *buffer, int size);
-extern void update_stats_window(struct display_window *win, char *line, double offset, int pos);
 extern bool opt_curses;
 extern bool opt_log;
-#define MIN_LOG_HEIGHT 10
 #define LOG_NAME "cpuminer-gc3355.log"
+#define TUI_SCROLL 2
+#define TUI_MIN_LOG 5
+#define TUI_MAX_STATS 20
 
 #ifdef WIN32
 #ifndef ASPRINTF_H

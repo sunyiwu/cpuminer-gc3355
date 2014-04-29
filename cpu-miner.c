@@ -131,7 +131,8 @@ static int work_thr_id;
 int longpoll_thr_id = -1;
 int stratum_thr_id = -1;
 int api_thr_id = -1;
-int tui_thr_id = -1;
+int tui_main_thr_id = -1;
+int tui_user_thr_id = -1;
 unsigned short opt_api_port = API_DEFAUKT_PORT;
 int api_sock;
 struct work_restart *work_restart = NULL;
@@ -237,46 +238,125 @@ static bool submit_work(struct thr_info *thr, const struct work *work_in);
 #include "gc3355.h"
 /* end */
 
+struct window_lines
+{
+	char ***str;
+	int *width;
+	int lines;
+	int cols;
+	int col;
+};
+
+struct window_lines* init_window_lines(int lines, int cols)
+{
+	int i;
+	struct window_lines *wl = malloc(sizeof(struct window_lines));
+	wl->str = calloc(lines, sizeof(char**));
+	for(i = 0; i < lines; i++)
+	{
+		wl->str[i] = calloc(cols, sizeof(char*));
+	}
+	wl->width = calloc(cols, sizeof(int));
+	wl->lines = lines;
+	wl->cols = cols;
+	wl->col = 0;
+	return wl;
+}
+
+void window_lines_addstr(struct window_lines *wl, int line, const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	if(wl->str[line][wl->col] != NULL)
+		free(wl->str[line][wl->col]);
+	int len = vasprintf(&wl->str[line][wl->col], fmt, ap);
+	if(len > wl->width[wl->col]) wl->width[wl->col] = len;
+	wl->col = (wl->col + 1) % wl->cols;
+	va_end(ap);
+}
+
+void window_lines_print(struct window_lines *wl, WINDOW *win)
+{
+	int i, j, k;
+	for(i = 0; i < wl->lines; i++)
+	{
+		for(j = 0; j < wl->cols; j++)
+		{
+			int offset = 1;
+			for(k = 0; k < j; k++)
+			{
+				offset += wl->width[k];
+			}
+			mvwprintw(win, i, offset, "%s", wl->str[i][j]);
+		}
+	}
+}
+
+void window_lines_free(struct window_lines *wl)
+{
+	int i, j;
+	for(i = 0; i < wl->lines; i++)
+	{
+		for(j = 0; j < wl->cols; j++)
+		{
+			if(wl->str[i][j] != NULL)
+				free(wl->str[i][j]);
+		}
+		free(wl->str[i]);
+	}
+	free(wl->str);
+	free(wl->width);
+	free(wl);
+}
+
 static void clean_tui()
 {
-	curs_set(1);
 	del_win(display->top);
 	del_win(display->summary);
 	del_win(display->stats);
 	del_win(display->log);
 	free(display);
 	endwin();
+	clear();
 }
 
 static void init_tui()
 {
-	int i, log_height;
-	struct tm tm, *tm_p;
-	char **stats;
-	char *p;
-	tm_p = localtime(&time_start);
-	memcpy(&tm, tm_p, sizeof(tm));
 	initscr();
 	cbreak();
 	keypad(stdscr, TRUE);
 	noecho();
 	curs_set(0);
 	refresh();
+}
+
+static void start_tui()
+{
+	int i, log_height, stats_height;
+	struct tm tm, *tm_p;
+	char *p;
+	struct window_lines *wl;
 	display = calloc(1, sizeof(struct display));
+	bool has_scroll = false;
+	tm_p = localtime(&time_start);
+	memcpy(&tm, tm_p, sizeof(tm));
 	display->top = new_win(2, COLS, 0, 0);
-	mvwhline(display->top->win, display->top->height - 1, 0, '=', COLS);
 	display->summary = new_win(3, COLS, display->top->height, 0);
-	mvwhline(display->summary->win, display->summary->height - 1, 0, '=', COLS);
-	display->stats = new_win(opt_n_threads + 1, COLS, display->top->height + display->summary->height, 0);
-	mvwhline(display->stats->win, display->stats->height - 1, 0, '=', COLS);
-	log_height = LINES - display->top->height - display->summary->height - display->stats->height;
-	if(log_height < MIN_LOG_HEIGHT) log_height = MIN_LOG_HEIGHT;
-	display->log = new_win(log_height, COLS, display->top->height + display->summary->height + display->stats->height, 0);
-	mvwhline(display->log->win, display->log->height - 1, 0, '=', COLS);
-	if(log_buffer == NULL)
-		log_buffer = log_buffer_init(display->log->height - 1);
+	stats_height = LINES - display->top->height - display->summary->height - TUI_MIN_LOG;
+	if(stats_height >= opt_n_threads) stats_height = opt_n_threads;
 	else
-		log_buffer_resize(log_buffer, display->log->height - 1);
+	{
+		if(stats_height < 1) stats_height = 1;
+		has_scroll = true;
+	}
+	display->stats = new_pad(30, COLS, stats_height, COLS, display->top->height + display->summary->height, 0);
+	log_height = LINES - display->top->height - display->summary->height - display->stats->height - TUI_SCROLL;
+	if(log_height < 1) log_height = 1;
+	display->log = new_win(log_height, COLS - 2, display->top->height + display->summary->height + display->stats->height + TUI_SCROLL, 1);
+	wmove(display->log->win, 0, 0);
+	idlok(display->log->win, true);
+	scrollok(display->log->win, true);
+	leaveok(display->log->win, true);
 	mvwprintw(display->top->win, 0, 1,  "cpuminer-gc3355 - Started: [%d-%02d-%02d %02d:%02d:%02d]",
 		tm.tm_year + 1900,
 		tm.tm_mon + 1,
@@ -285,35 +365,29 @@ static void init_tui()
 		tm.tm_min,
 		tm.tm_sec
 	);
-	wmove(display->summary->win, 0, 0);
-	wclrtoeol(display->summary->win);
-	update_stats_window(display->summary, "(5s):", 0, 0);
-	update_stats_window(display->summary, "0/0 MH/s", 0.1, 0);
-	update_stats_window(display->summary, "A:0 R:0 HW:0", 0.4, 0);
+	mvwprintw(display->summary->win, 0, 1, "(5s) | 0/0 MH/s | A:0 R:0 HW:0");
 	p = strrchr(rpc_url, '/');
 	if(p == NULL) p = rpc_url;
 	else p++;
-	stats = calloc(1, sizeof(char*));
-	asprintf(&stats[0], "Connected to %s diff %d with stratum as user %s", p, (int) stratum.job.diff, rpc_user == NULL ? rpc_userpass : rpc_user);
-	wmove(display->summary->win, 1, 0);
-	wclrtoeol(display->summary->win);
-	update_stats_window(display->summary, stats[0], 0, 1);
-	free(stats[0]);
+	mvwprintw(display->summary->win, 1, 1,  "Connected to %s diff %d with stratum as user %s", p, (int) stratum.job.diff, rpc_user == NULL ? rpc_userpass : rpc_user);
+	wl = init_window_lines(opt_n_threads, 4);
 	for(i = 0; i < opt_n_threads; i++)
 	{
-		wmove(display->stats->win, i, 0);
-		wclrtoeol(display->stats->win);
-		asprintf(&stats[0], "GSD %d:", i);
-		update_stats_window(display->stats, stats[0], 0, i);
-		free(stats[0]);
-		update_stats_window(display->stats, "0 MHz", 0.2, i);
-		update_stats_window(display->stats, "0/0 KH/s", 0.35, i);
-		update_stats_window(display->stats, "A:0 R:0 HW:0", 0.65, i);
+		window_lines_addstr(wl, i, "GSD %d", i);
+		window_lines_addstr(wl, i, " | 0 MHz");
+		window_lines_addstr(wl, i, " | 0/0 KH/s");
+		window_lines_addstr(wl, i, " | A: 0 R: 0 HW: 0");
 	}
-	free(stats);
+	window_lines_print(wl, display->stats->win);
+	window_lines_free(wl);
+	mvwhline(display->top->win, display->top->height - 1, 0, '=', COLS);
+	mvwhline(display->summary->win, display->summary->height - 1, 0, '=', COLS);
+	mvhline(display->top->height + display->summary->height + display->stats->height + 1, 0, '=', COLS);
+	if(has_scroll)
+		mvprintw(display->top->height + display->summary->height + display->stats->height, 1, "Scroll with UP and DOWN keys");
 	wrefresh(display->top->win);
 	wrefresh(display->summary->win);
-	wrefresh(display->stats->win);
+	prefresh(display->stats->win, 0, 0, display->stats->y, 0, display->stats->height + display->stats->y - 1, COLS);
 	wrefresh(display->log->win);
 	refresh();
 }
@@ -323,27 +397,82 @@ static void resize_tui()
 	pthread_mutex_lock(&tui_lock);
 	clean_tui();
 	refresh();
-    clear();
-	init_tui();
+	start_tui();
 	pthread_mutex_unlock(&tui_lock);
 }
 
-static void *tui_thread(void *userdata)
+static void *tui_user_thread(void *userdata)
 {
 	struct thr_info *mythr = userdata;
-	char **stats = calloc(4, sizeof(char*));
+	int ch;
+	while(opt_curses && (ch = getch()))
+	{
+		switch(ch)
+		{
+			case KEY_DOWN:
+				pthread_mutex_lock(&tui_lock);
+				if(display->stats->py < opt_n_threads - display->stats->height)
+				prefresh(display->stats->win, ++display->stats->py, 0, display->stats->y, 0, display->stats->height + display->stats->y - 1, COLS);
+				pthread_mutex_unlock(&tui_lock);
+				break;
+			case KEY_UP:
+				pthread_mutex_lock(&tui_lock);
+				if(display->stats->py > 0)
+				prefresh(display->stats->win, --display->stats->py, 0, display->stats->y, 0, display->stats->height + display->stats->y - 1, COLS);
+				pthread_mutex_unlock(&tui_lock);
+				break;
+			default:
+				break;
+		}
+	}
+	return NULL;
+}
+
+static void *tui_main_thread(void *userdata)
+{
+	struct thr_info *mythr = userdata;
 	char *p;
 	int i, j;
 	struct timeval timestr;
-	double hashrate, pool_hashrate, thread_hashrate, thread_pool_hashrate;
-	unsigned int accepted, rejected, hwe, thread_accepted, thread_rejected, thread_hwe, thread_freq;
-	while(true)
+	double hashrate, pool_hashrate, thread_hashrate, thread_pool_hashrate, pool_hashrate_width, hashrate_width;
+	unsigned int accepted, rejected, hwe, thread_accepted, thread_rejected, thread_hwe, thread_freq, accepted_width, rejected_width, hwe_width;
+	struct window_lines *wl;
+	while(opt_curses)
 	{
-		if(!opt_curses) break;
 		pthread_mutex_lock(&tui_lock);
 		pthread_mutex_lock(&stats_lock);
-		hashrate = pool_hashrate = accepted = rejected = hwe = 0;
 		gettimeofday(&timestr, NULL);
+		werase(display->stats->win);
+		werase(display->summary->win);
+		accepted_width = rejected_width = hwe_width = pool_hashrate_width = hashrate_width = 0;
+		for(i = 0; i < opt_n_threads; i++)
+		{
+			thread_hashrate = thread_pool_hashrate = thread_accepted = thread_rejected = thread_hwe = 0;
+			if(gc3355_devs[i].ready)
+			{
+				for(j = 0; j < gc3355_devs[i].chips; j++)
+				{
+					thread_hashrate += gc3355_devs[i].hashrate[j];
+					thread_pool_hashrate += gc3355_devs[i].shares[j];
+					thread_accepted += gc3355_devs[i].accepted[j];
+					thread_rejected += gc3355_devs[i].rejected[j];
+					thread_hwe += gc3355_devs[i].total_hwe[j];
+				}
+				thread_pool_hashrate = (1 << 16) / ((timestr.tv_sec - gc3355_time_start) / thread_pool_hashrate);
+				if(thread_accepted > accepted_width) accepted_width = thread_accepted;
+				if(thread_rejected > rejected_width) rejected_width = thread_rejected;
+				if(thread_hwe > hwe_width) hwe_width = thread_hwe;
+				if(thread_hashrate > hashrate_width) hashrate_width = thread_hashrate;
+				if(thread_pool_hashrate > pool_hashrate_width) pool_hashrate_width = thread_pool_hashrate;
+			}
+		}
+		accepted_width = snprintf(NULL, 0, "%d", accepted_width);
+		rejected_width = snprintf(NULL, 0, "%d", rejected_width);
+		hwe_width = snprintf(NULL, 0, "%d", hwe_width);
+		hashrate_width = snprintf(NULL, 0, "%.1lf", hashrate_width / 1000);
+		pool_hashrate_width = snprintf(NULL, 0, "%.1lf", pool_hashrate_width / 1000);
+		hashrate = pool_hashrate = accepted = rejected = hwe = 0;
+		wl = init_window_lines(opt_n_threads, 6);
 		for(i = 0; i < opt_n_threads; i++)
 		{
 			thread_hashrate = thread_pool_hashrate = thread_accepted = thread_rejected = thread_hwe = thread_freq = 0;
@@ -366,39 +495,25 @@ static void *tui_thread(void *userdata)
 				rejected += thread_rejected;
 				hwe += thread_hwe;
 			}
-			asprintf(&stats[0], "GSD %d", i);
-			asprintf(&stats[1], "%d MHz", thread_freq);
-			asprintf(&stats[2], "%.1lf/%.1lf KH/s", thread_pool_hashrate / 1000, thread_hashrate / 1000);
-			asprintf(&stats[3], "A:%d R:%d HW:%d", thread_accepted, thread_rejected, thread_hwe);
-			wmove(display->stats->win, i, 0);
-			wclrtoeol(display->stats->win);
-			update_stats_window(display->stats, stats[0], 0, i);	
-			update_stats_window(display->stats, stats[1], 0.2, i);
-			update_stats_window(display->stats, stats[2], 0.35, i);
-			update_stats_window(display->stats, stats[3], 0.65, i);
-			free(stats[0]); free(stats[1]); free(stats[2]); free(stats[3]);
+			window_lines_addstr(wl, i, "GSD %d", i);
+			window_lines_addstr(wl, i, " | %d MHz", thread_freq);
+			window_lines_addstr(wl, i, " | %*.1lf/%*.1lf KH/s", (int) pool_hashrate_width, thread_pool_hashrate / 1000, (int) hashrate_width, thread_hashrate / 1000);
+			window_lines_addstr(wl, i, " | A: %*d", accepted_width, thread_accepted);
+			window_lines_addstr(wl, i, " R: %*d", rejected_width, thread_rejected);
+			window_lines_addstr(wl, i, " H: %*d", hwe_width, thread_hwe);
 		}
 		pool_hashrate = (1 << 16) / ((timestr.tv_sec - gc3355_time_start) / pool_hashrate);
-		asprintf(&stats[0], "(%ds):", REFRESH_INTERVAL);
-		asprintf(&stats[1], "%.2lf/%.2lf MH/s", pool_hashrate / 1000000, hashrate / 1000000);
-		asprintf(&stats[2], "A:%d R:%d HW:%d", accepted, rejected, hwe);
-		wmove(display->summary->win, 0, 0);
-		wclrtoeol(display->summary->win);
-		update_stats_window(display->summary, stats[0], 0, 0);
-		update_stats_window(display->summary, stats[1], 0.1, 0);
-		update_stats_window(display->summary, stats[2], 0.4, 0);
-		free(stats[0]); free(stats[1]); free(stats[2]);
+		pthread_mutex_unlock(&stats_lock);
+		window_lines_print(wl, display->stats->win);
+		window_lines_free(wl);
+		prefresh(display->stats->win, display->stats->py, 0, display->stats->y, 0, display->stats->height + display->stats->y - 1, COLS);
+		mvwprintw(display->summary->win, 0, 1, "(%ds) | %.2lf/%.2lf MH/s | A: %d R: %d HW: %d", REFRESH_INTERVAL, pool_hashrate / 1000000, hashrate / 1000000, accepted, rejected, hwe);
 		p = strrchr(rpc_url, '/');
 		if(p == NULL) p = rpc_url;
 		else p++;
-		asprintf(&stats[0], "Connected to %s diff %d with stratum as user %s", p, (int) stratum.job.diff, rpc_user == NULL ? rpc_userpass : rpc_user);
-		wmove(display->summary->win, 1, 0);
-		wclrtoeol(display->summary->win);
-		update_stats_window(display->summary, stats[0], 0, 1);
-		free(stats[0]);
-		pthread_mutex_unlock(&stats_lock);
+		mvwprintw(display->summary->win, 1, 1, "Connected to %s diff %d with stratum as user %s", p, (int) stratum.job.diff, rpc_user == NULL ? rpc_userpass : rpc_user);
+		mvwhline(display->summary->win, display->summary->height - 1, 0, '=', COLS);
 		wrefresh(display->summary->win);
-		wrefresh(display->stats->win);
 		pthread_mutex_unlock(&tui_lock);
 		sleep(REFRESH_INTERVAL);
 	}
@@ -809,7 +924,7 @@ static void *stratum_thread(void *userdata)
 				applog(LOG_INFO, "Stratum detected new block");
 			}
 			pthread_mutex_lock(&g_work_lock);
-			pthread_mutex_unlock(&stratum.work_lock);
+			pthread_mutex_lock(&stratum.work_lock);
 			restart_threads();
 			strcpy(g_prev_job_id, g_curr_job_id);
 			for(i = 0; i < 8; i++) g_prev_target[i] = g_curr_target[i];
@@ -1192,8 +1307,8 @@ static void clean_up()
 		pthread_mutex_lock(&tui_lock);
 		opt_curses = false;
 		clean_tui();
+		curs_set(1);
 		pthread_mutex_unlock(&tui_lock);
-		clear();
 	}
 	close(api_sock);
 	int i;
@@ -1211,23 +1326,23 @@ void signal_handler(int sig)
 		applog(LOG_DEBUG, "SIGHUP received");
 		break;
 	case SIGINT:
-		clean_up();
 		applog(LOG_DEBUG, "SIGINT received, exiting");
+		clean_up();
 		exit(0);
 		break;
 	case SIGTERM:
-		clean_up();
 		applog(LOG_DEBUG, "SIGTERM received, exiting");
+		clean_up();
 		exit(0);
 		break;
 	case SIGSEGV:
-		clean_up();
 		applog(LOG_DEBUG, "SIGSEGV received, exiting");
+		clean_up();
 		exit(0);
 		break;
 	case SIGWINCH:
-		resize_tui();
 		applog(LOG_DEBUG, "SIGWINCH received");
+		resize_tui();
 		break;
 	}
 }
@@ -1284,7 +1399,12 @@ int main(int argc, char *argv[])
 	}
 	
 	if(opt_curses)
+	{
+		pthread_mutex_lock(&tui_lock);
 		init_tui();
+		start_tui();
+		pthread_mutex_unlock(&tui_lock);
+	}
 
 	struct gc3355_dev devs[opt_n_threads];
 	memset(&devs, 0, sizeof(devs));
@@ -1301,7 +1421,7 @@ int main(int argc, char *argv[])
 	if (!work_restart)
 		return 1;
 
-	thr_info = calloc(opt_n_threads + 5, sizeof(*thr));
+	thr_info = calloc(opt_n_threads + 6, sizeof(*thr));
 	if (!thr_info)
 		return 1;
 
@@ -1358,11 +1478,20 @@ int main(int argc, char *argv[])
 	if(opt_curses)
 	{
 		/* init tui thread info */
-		tui_thr_id = opt_n_threads + 4;
-		thr = &thr_info[tui_thr_id];
-		thr->id = tui_thr_id;
+		tui_main_thr_id = opt_n_threads + 4;
+		thr = &thr_info[tui_main_thr_id];
+		thr->id = tui_main_thr_id;
 		/* start api thread */
-		if (unlikely(pthread_create(&thr->pth, NULL, tui_thread, thr))) {
+		if (unlikely(pthread_create(&thr->pth, NULL, tui_main_thread, thr))) {
+			applog(LOG_ERR, "tui main thread create failed");
+			return 1;
+		}
+		/* init tui thread info */
+		tui_user_thr_id = opt_n_threads + 5;
+		thr = &thr_info[tui_user_thr_id];
+		thr->id = tui_user_thr_id;
+		/* start api thread */
+		if (unlikely(pthread_create(&thr->pth, NULL, tui_user_thread, thr))) {
 			applog(LOG_ERR, "tui thread create failed");
 			return 1;
 		}
