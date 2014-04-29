@@ -25,6 +25,7 @@ GC3355-specific options:
 --gc3355-autotune  								auto overclocking each GC3355 chip (default: no)
 ```
 
+If you cannot find any /dev/ttyUSB or /dev/ttyACM, it related to running cgminer, this can easily be fixed by rebooting the system.
 You do not need the set the # of chips for USB Miner or G-Blade, it is detected automatically
 Example with per chip tuned frequency setting, USB miner (ttyACM0) and G-Blade (ttyACM1, ttyACM2):
 
