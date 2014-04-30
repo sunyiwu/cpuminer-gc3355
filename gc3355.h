@@ -559,6 +559,13 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			unsigned int add_hashes = 0;
 			unsigned char add_hwe = 0;
 			
+			if(rptbuf[2] || rptbuf[3])
+			{
+				applog(LOG_DEBUG, "%d: Invalid response: (0x5520%02x%02x), restarting scanhash", gc3355->id, rptbuf[2], rptbuf[3]);
+				work_restart[thr_id].restart = 1;
+				break;
+			}
+			
 			// swab for big endian
 			memcpy((unsigned char *)&nonce, rptbuf+4, 4);
 			nonce = htole32(nonce);
@@ -597,7 +604,7 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			{
 				add_hwe = 1;
 				stop = -1;
-				applog(LOG_DEBUG, "%d@%d %dMHz: Got nonce %s, Invalid nonce! (%d) (0x%x) (%02x%02x%02x%02x%02x%02x)", gc3355->id, chip_id, freq, bin, gc3355->hwe[chip_id] + 1, work_id, rptbuf[0], rptbuf[1], rptbuf[2], rptbuf[3], rptbuf[4], rptbuf[5]);
+				applog(LOG_DEBUG, "%d@%d %dMHz: Got nonce %s, Invalid nonce! (%d/%d) (0x%x)", gc3355->id, chip_id, freq, bin, gc3355->hwe[chip_id] + 1, GC3355_OVERCLOCK_MAX_HWE, work_id);
 			}
 			pthread_mutex_lock(&stats_lock);
 			gc3355->hashes[chip_id] += add_hashes;

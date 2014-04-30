@@ -455,11 +455,8 @@ static void *tui_main_thread(void *userdata)
 	struct window_lines *wl;
 	while(opt_curses)
 	{
-		pthread_mutex_lock(&tui_lock);
 		pthread_mutex_lock(&stats_lock);
 		gettimeofday(&timestr, NULL);
-		werase(display->stats->win);
-		werase(display->summary->win);
 		accepted_width = rejected_width = hwe_width = pool_hashrate_width = hashrate_width = 0;
 		for(i = 0; i < opt_n_threads; i++)
 		{
@@ -520,6 +517,9 @@ static void *tui_main_thread(void *userdata)
 		}
 		pool_hashrate = (1 << 16) / ((timestr.tv_sec - gc3355_time_start) / pool_hashrate);
 		pthread_mutex_unlock(&stats_lock);
+		pthread_mutex_lock(&tui_lock);
+		werase(display->stats->win);
+		werase(display->summary->win);
 		window_lines_print(wl, display->stats->win);
 		window_lines_free(wl);
 		wl = init_window_lines(1, 1);

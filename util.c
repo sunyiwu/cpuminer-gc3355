@@ -135,7 +135,7 @@ void applog(int prio, const char *fmt, ...)
 	{
 		pthread_mutex_lock(&applog_lock);
 		FILE *fp; 
-		fp = fopen(LOG_NAME, "a+");
+		fp = fopen(LOG_NAME, "a");
 		vfprintf(fp, f, ap);
 		fflush(fp);
 		fclose(fp);
@@ -150,20 +150,14 @@ void applog(int prio, const char *fmt, ...)
 	}
 	else
 	{
-		if(!pthread_mutex_trylock(&tui_lock))
+		pthread_mutex_lock(&tui_lock);
+		if(vasprintf(&s, f, ap) >= 0)
 		{
-			if(vasprintf(&s, f, ap) >= 0)
-			{
-				waddstr(display->log->win, s);
-				free(s);
-				wrefresh(display->log->win);
-			}
-			else
-			{
-				applog(LOG_ERR, "applog : vasprintf() failed");
-			}
-			pthread_mutex_unlock(&tui_lock);
+			waddstr(display->log->win, s);
+			free(s);
+			wrefresh(display->log->win);
 		}
+		pthread_mutex_unlock(&tui_lock);
 	}
 	va_end(ap);
 }
