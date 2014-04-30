@@ -362,7 +362,7 @@ static void start_tui()
 		if(stats_height < 1) stats_height = 1;
 		has_scroll = true;
 	}
-	display->stats = new_pad(30, COLS, stats_height, COLS, display->top->height + display->summary->height, 0);
+	display->stats = new_pad(opt_n_threads, COLS, stats_height, COLS, display->top->height + display->summary->height, 0);
 	log_height = LINES - display->top->height - display->summary->height - display->stats->height - TUI_SCROLL;
 	if(log_height < 1) log_height = 1;
 	display->log = new_win(log_height, COLS - 2, display->top->height + display->summary->height + display->stats->height + TUI_SCROLL, 1);
