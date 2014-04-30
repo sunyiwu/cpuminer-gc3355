@@ -270,7 +270,13 @@ void window_lines_addstr(struct window_lines *wl, int line, const char *fmt, ...
 	if(wl->str[line][wl->col] != NULL)
 		free(wl->str[line][wl->col]);
 	int len = vasprintf(&wl->str[line][wl->col], fmt, ap);
-	if(len > wl->width[wl->col]) wl->width[wl->col] = len;
+	if(len < 0)
+	{
+		wl->str[line][wl->col] = NULL;
+		wl->width[wl->col] = 0;
+		applog(LOG_ERR, "window_lines_addstr : vasprintf() failed");
+	}
+	else if(len > wl->width[wl->col]) wl->width[wl->col] = len;
 	wl->col = (wl->col + 1) % wl->cols;
 	va_end(ap);
 }
@@ -282,12 +288,19 @@ void window_lines_print(struct window_lines *wl, WINDOW *win)
 	{
 		for(j = 0; j < wl->cols; j++)
 		{
-			int offset = 1;
-			for(k = 0; k < j; k++)
+			if(wl->str[i][j] != NULL)
 			{
-				offset += wl->width[k];
+				int offset = 1;
+				for(k = 0; k < j; k++)
+				{
+					offset += wl->width[k];
+				}
+				mvwprintw(win, i, offset, "%s", wl->str[i][j]);
 			}
-			mvwprintw(win, i, offset, "%s", wl->str[i][j]);
+			else
+			{
+				applog(LOG_ERR, "window_lines_print : col (%d,%d) is NULL", i, j);
+			}
 		}
 	}
 }
@@ -506,14 +519,17 @@ static void *tui_main_thread(void *userdata)
 		pthread_mutex_unlock(&stats_lock);
 		window_lines_print(wl, display->stats->win);
 		window_lines_free(wl);
-		prefresh(display->stats->win, display->stats->py, 0, display->stats->y, 0, display->stats->height + display->stats->y - 1, COLS);
-		mvwprintw(display->summary->win, 0, 1, "(%ds) | %.2lf/%.2lf MH/s | A: %d R: %d HW: %d", REFRESH_INTERVAL, pool_hashrate / 1000000, hashrate / 1000000, accepted, rejected, hwe);
+		wl = init_window_lines(1, 1);
+		window_lines_addstr(wl, 0, "(%ds) | %.2lf/%.2lf MH/s | A: %d R: %d HW: %d", REFRESH_INTERVAL, pool_hashrate / 1000000, hashrate / 1000000, accepted, rejected, hwe);
+		window_lines_print(wl, display->summary->win);
+		window_lines_free(wl);
 		p = strrchr(rpc_url, '/');
 		if(p == NULL) p = rpc_url;
 		else p++;
 		mvwprintw(display->summary->win, 1, 1, "Connected to %s diff %d with stratum as user %s", p, (int) stratum.job.diff, rpc_user == NULL ? rpc_userpass : rpc_user);
 		mvwhline(display->summary->win, display->summary->height - 1, 0, '=', COLS);
 		wrefresh(display->summary->win);
+		prefresh(display->stats->win, display->stats->py, 0, display->stats->y, 0, display->stats->height + display->stats->y - 1, COLS);
 		pthread_mutex_unlock(&tui_lock);
 		sleep(REFRESH_INTERVAL);
 	}
@@ -1304,6 +1320,7 @@ static void clean_up()
 {
 	if(opt_curses)
 	{
+		applog(LOG_INFO, "Clean up");
 		pthread_mutex_lock(&tui_lock);
 		opt_curses = false;
 		clean_tui();
