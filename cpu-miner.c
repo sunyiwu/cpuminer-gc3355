@@ -42,6 +42,8 @@
 #define PROGRAM_NAME		"minerd"
 #define DEF_RPC_URL		"http://127.0.0.1:9332/"
 
+#define MINER_VERSION	"v0.9a"
+
 enum workio_commands {
 	WC_SUBMIT_WORK,
 };
@@ -370,7 +372,8 @@ static void start_tui()
 	idlok(display->log->win, true);
 	scrollok(display->log->win, true);
 	leaveok(display->log->win, true);
-	mvwprintw(display->top->win, 0, 1,  "cpuminer-gc3355 - Started: [%d-%02d-%02d %02d:%02d:%02d]",
+	mvwprintw(display->top->win, 0, 1,  "cpuminer-gc3355 (%s) - Started: [%d-%02d-%02d %02d:%02d:%02d]",
+		MINER_VERSION,
 		tm.tm_year + 1900,
 		tm.tm_mon + 1,
 		tm.tm_mday,
@@ -1156,7 +1159,7 @@ out:
 
 static void show_version_and_exit(void)
 {
-	printf("%s\n%s\n%s\n", PACKAGE_STRING, curl_version(), GC3355_VERSION);
+	printf("%s\n%s\n%s\n", PACKAGE_STRING, curl_version(), MINER_VERSION);
 	exit(0);
 }
 

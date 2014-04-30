@@ -72,10 +72,6 @@ typedef unsigned int speed_t;
 #include <gc3355-commands.h>
 #include <string.h>
 
-#define GC3355_MINER_VERSION	"v3e"
-#define GC3355_VERSION			"LightningAsic"
-
-static const char *gc3355_version = GC3355_MINER_VERSION;
 static char can_start = 0x0;
 
 struct chip_freq
