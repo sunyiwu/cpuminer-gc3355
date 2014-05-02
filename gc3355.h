@@ -336,6 +336,7 @@ static void *gc3355_thread(void *userdata)
 	struct timeval timestr;
 	struct dev_freq *dev_freq_curr;
 	struct chip_freq *chip_freq_curr;
+	unsigned char rptbuf[12];
 	
 	gettimeofday(&timestr, NULL);
 	gc3355 = &gc3355_devs[thr_id];
@@ -351,6 +352,9 @@ static void *gc3355_thread(void *userdata)
 		can_start++;
 		gc3355_exit(gc3355);
 	}
+	// clear read buffer
+	read(gc3355->dev_fd, rptbuf, 12);
+	memset(rptbuf, 0, 12);
 	applog(LOG_INFO, "%d: Open UART device %s", thr_id, gc3355->devname);
 	uint32_t fw_version = gc3355_get_firmware_version(gc3355);
 	applog(LOG_INFO, "%d: Firmware version: 0x%08x", thr_id, fw_version);
