@@ -505,6 +505,9 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 		memcpy(bin+68, (unsigned char *)data2, 80);
 		memcpy(bin+148, "\xff\xff\xff\xff", 4);
 		memcpy(bin+152, (unsigned char[]){*work->work_id >> 24, *work->work_id >> 16, *work->work_id >> 8, *work->work_id}, 4);
+		// clear read buffer
+		read(gc3355->dev_fd, rptbuf, 12);
+		memset(rptbuf, 0, 12);
 		gc3355_send_cmds(gc3355, single_cmd_reset);
 		gc3355_write(gc3355, bin, 156);
 		gc3355->resend = false;
