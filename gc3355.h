@@ -91,6 +91,7 @@ struct dev_freq
 static struct dev_freq *dev_freq_root;
 
 #define GC3355_OVERCLOCK_MAX_HWE 3
+#define GC3355_OVERCLOCK_ADJUST_MIN 10
 #define GC3355_OVERCLOCK_ADJUST_STEPS 3845
 #define GC3355_OVERCLOCK_FREQ_STEP 25
 #define GC3355_MIN_FREQ 600
@@ -239,40 +240,6 @@ static int gc3355_write(struct gc3355_dev *gc3355, const void *buf, size_t bufle
 	return 0;
 }
 
-#ifndef WIN32
-/* read data from UART */
-static int gc3355_gets(struct gc3355_dev *gc3355, unsigned char *buf, int read_amount)
-{
-	int				fd;
-	unsigned char	*bufhead, *p;
-	fd_set			rdfs;
-	struct timeval	tv;
-	ssize_t			nread;
-	int				n;
-
-	fd = gc3355->dev_fd;
-	memset(buf, 0, read_amount);
-	tv.tv_sec  = 0;
-	tv.tv_usec = 100000;
-	FD_ZERO(&rdfs);
-	FD_SET(fd, &rdfs);
-	n = select(fd+1, &rdfs, NULL, NULL, &tv);
-	if (n < 0)
-	{
-		return 1;
-	}
-	else if (n == 0)
-	{
-		return 0;
-	}
-	nread = read(fd, buf, read_amount);
-	if (nread != read_amount)
-	{
-		return 1;
-	}
-	return 0;
-}
-#else
 static int gc3355_gets(struct gc3355_dev *gc3355, unsigned char *buf, int read_amount)
 {
 	int fd;
@@ -282,17 +249,22 @@ static int gc3355_gets(struct gc3355_dev *gc3355, unsigned char *buf, int read_a
 	fd = gc3355->dev_fd;
 	memset(buf, 0, read_amount);
 	nread = read(fd, buf, read_amount);
+	if(nread == -1)
+	{
+		applog(LOG_ERR, "%d: Read error: %s", gc3355->id, strerror(errno));
+		return 1;
+	}
 	if(nread == 0)
 	{
-		return 0;
+		return -1;
 	}
 	if (nread != read_amount)
 	{
+		applog(LOG_ERR, "%d: Read error: Read %d bytes, but expected %d bytes", gc3355->id, nread, read_amount);
 		return 1;
 	}
 	return 0;
 }
-#endif
 
 static void gc3355_send_cmds(struct gc3355_dev *gc3355, const unsigned char *cmds[])
 {
@@ -407,6 +379,7 @@ static void *gc3355_thread(void *userdata)
 	gc3355->hwe = calloc(gc3355->chips, sizeof(unsigned short));
 	gc3355->adjust = calloc(gc3355->chips, sizeof(unsigned short));
 	gc3355->steps = calloc(gc3355->chips, sizeof(unsigned short));
+	gc3355->autotune_accepted = calloc(gc3355->chips, sizeof(unsigned int));
 	gc3355->accepted = calloc(gc3355->chips, sizeof(unsigned int));
 	gc3355->rejected = calloc(gc3355->chips, sizeof(unsigned int));
 	gc3355->hashrate = calloc(gc3355->chips, sizeof(double));
@@ -503,7 +476,7 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 {
 	uint32_t *pdata = work->data;
 	const uint32_t *ptarget = work->target;
-	int i;
+	int i, ret;
 	unsigned char *ph;
 	int thr_id = gc3355->id;
 	unsigned char rptbuf[12];
@@ -532,9 +505,6 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 		memcpy(bin+68, (unsigned char *)data2, 80);
 		memcpy(bin+148, "\xff\xff\xff\xff", 4);
 		memcpy(bin+152, (unsigned char[]){*work->work_id >> 24, *work->work_id >> 16, *work->work_id >> 8, *work->work_id}, 4);
-		// clear buffer
-		gc3355_gets(gc3355, (unsigned char *)rptbuf, 12);
-		memset(rptbuf, 0, 12);
 		gc3355_send_cmds(gc3355, single_cmd_reset);
 		gc3355_write(gc3355, bin, 156);
 		gc3355->resend = false;
@@ -547,7 +517,7 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 		}
 	}
 	
-	while(!work_restart[thr_id].restart && !gc3355_gets(gc3355, (unsigned char *)rptbuf, 12) && !work_restart[thr_id].restart)
+	while(!work_restart[thr_id].restart && (ret = gc3355_gets(gc3355, (unsigned char *)rptbuf, 12)) <= 0 && !work_restart[thr_id].restart)
 	{
 		if (rptbuf[0] == 0x55 || rptbuf[1] == 0x20)
 		{
@@ -561,9 +531,8 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			
 			if(rptbuf[2] || rptbuf[3])
 			{
-				applog(LOG_DEBUG, "%d: Invalid response: (0x5520%02x%02x), restarting scanhash", gc3355->id, rptbuf[2], rptbuf[3]);
-				work_restart[thr_id].restart = 1;
-				break;
+				applog(LOG_DEBUG, "%d: Invalid response: (0x5520%02x%02x%02x%02x%02x%02x)", gc3355->id, rptbuf[2], rptbuf[3], rptbuf[4], rptbuf[5], rptbuf[6], rptbuf[7]);
+				continue;
 			}
 			
 			// swab for big endian
@@ -587,10 +556,9 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			}
 			if(work_id != g_curr_work_id)
 			{
-				applog(LOG_DEBUG, "%d@%d: Work_id differs (%08x != %08x), restarting scanhash", gc3355->id, chip_id, work_id, g_curr_work_id);
+				applog(LOG_DEBUG, "%d@%d: Work_id differs (%08x != %08x)", gc3355->id, chip_id, work_id, g_curr_work_id);
 				gc3355->last_nonce[chip_id] = nonce;
-				work_restart[thr_id].restart = 1;
-				break;
+				continue;
 			}
 			gettimeofday(&timestr, NULL);
 			time_now = timestr.tv_sec + timestr.tv_usec / 1000000.0;
@@ -627,10 +595,15 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 				}
 				else
 				{
+					unsigned short steps = GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id];
+					if(GC3355_OVERCLOCK_ADJUST_MIN > gc3355->autotune_accepted[chip_id] && steps < stratum.job.diff * (GC3355_OVERCLOCK_ADJUST_MIN - gc3355->autotune_accepted[chip_id]))
+					{
+						steps = stratum.job.diff * (GC3355_OVERCLOCK_ADJUST_MIN - gc3355->autotune_accepted[chip_id]);
+					}
 					if(gc3355->hashrate[chip_id] < GC3355_HASH_SPEED * freq * GC3355_TRESHOLD)
 					{
 						unsigned short prev_f = prev_freq(gc3355, chip_id);
-						if(gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS)
+						if(gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS && gc3355->autotune_accepted[chip_id] >= GC3355_OVERCLOCK_ADJUST_MIN)
 						{
 							if(prev_f != freq)
 							{
@@ -644,7 +617,9 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 							}
 						}
 						else
-							applog(LOG_DEBUG, "%d@%d: %d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id], prev_f);
+						{
+							applog(LOG_DEBUG, "%d@%d: ~%d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, steps, prev_f);
+						}
 					}
 					else
 					{
@@ -661,10 +636,11 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 						}
 						else
 						{
+
 							if(next_f != freq)
-								applog(LOG_DEBUG, "%d@%d: %d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id], next_f);
+								applog(LOG_DEBUG, "%d@%d: ~%d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, steps, next_f);
 							else
-								applog(LOG_DEBUG, "%d@%d: %d steps until autotune stops", gc3355->id, chip_id, GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id]);
+								applog(LOG_DEBUG, "%d@%d: ~%d steps until autotune stops", gc3355->id, chip_id, steps);
 						}
 					}
 				}
@@ -675,14 +651,18 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 					gc3355_set_core_freq(gc3355, chip_id, freq);
 					gc3355->hwe[chip_id] = 0;
 					gc3355->steps[chip_id] = 0;
+					gc3355->autotune_accepted[chip_id] = 0;
 				}
 			}
 			pthread_mutex_unlock(&stats_lock);
 			return stop;
 		}
-#ifdef WIN32
+		else if(ret == 0)
+		{
+			applog(LOG_DEBUG, "%d: Invalid header: (0x%02x%02x%02x%02x)", gc3355->id, rptbuf[0], rptbuf[1], rptbuf[2], rptbuf[3]);
+			continue;
+		}
 		usleep(100000);
-#endif
 	}
 	return 0;
 }

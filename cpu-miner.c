@@ -97,6 +97,7 @@ struct gc3355_dev {
 	unsigned short *hwe;
 	short *adjust;
 	unsigned short *steps;
+	unsigned int *autotune_accepted;
 	unsigned int *accepted;
 	unsigned int *rejected;
 	double *hashrate;
@@ -591,7 +592,13 @@ static void share_result(int result, const char *reason, int thr_id, int chip_id
 	struct timeval timestr;
 	pthread_mutex_lock(&stats_lock);
 	if(result)
+	{
 		gc3355_devs[thr_id].accepted[chip_id]++;
+		if(opt_gc3355_autotune && gc3355_devs[thr_id].adjust[chip_id] > 0)
+		{
+			gc3355_devs[thr_id].autotune_accepted[chip_id]++;
+		}
+	}
 	else
 		gc3355_devs[thr_id].rejected[chip_id]++;
 	gettimeofday(&timestr, NULL);
@@ -937,14 +944,14 @@ static void *stratum_thread(void *userdata)
 		restarted = 0;
 		if (stratum.job.job_id &&
 		    (strcmp(stratum.job.job_id, g_curr_job_id) || !g_work_time)) {
+			pthread_mutex_lock(&g_work_lock);
+			pthread_mutex_lock(&stratum.work_lock);
+			restart_threads();
 			applog(LOG_INFO, "New job_id: %s Diff: %d", stratum.job.job_id, (int) (stratum.job.diff));
 			if (stratum.job.clean)
 			{
 				applog(LOG_INFO, "Stratum detected new block");
 			}
-			pthread_mutex_lock(&g_work_lock);
-			pthread_mutex_lock(&stratum.work_lock);
-			restart_threads();
 			strcpy(g_prev_job_id, g_curr_job_id);
 			for(i = 0; i < 8; i++) g_prev_target[i] = g_curr_target[i];
 			g_prev_work_id = g_curr_work_id;
