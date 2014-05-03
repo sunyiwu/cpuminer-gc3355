@@ -218,7 +218,7 @@ struct work {
 	uint32_t data[32];
 	uint32_t *target;
 	char *job_id;
-	uint32_t *work_id;
+	uint32_t work_id;
 	unsigned char xnonce2[4];
 	unsigned short thr_id;
 };
@@ -227,8 +227,8 @@ static uint32_t g_prev_target[8];
 static uint32_t g_curr_target[8];
 static char g_prev_job_id[128];
 static char g_curr_job_id[128];
-static uint32_t g_prev_work_id;
-static uint32_t g_curr_work_id;
+static uint32_t g_prev_work_id = 0;
+static uint32_t g_curr_work_id = 0;
 static char can_work = 0x1;
 
 static struct work *g_works;
@@ -859,7 +859,7 @@ static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 	work->data[31] = 0x00000280;
 	
 	work->target = g_curr_target;
-	work->work_id = &g_curr_work_id;
+	work->work_id = g_curr_work_id;
 	
 	free(coinbase);
 }
@@ -911,12 +911,13 @@ static void *stratum_thread(void *userdata)
 		goto out;
 	applog(LOG_INFO, "Starting Stratum on %s", stratum.url);
 	
-	g_works = malloc(opt_n_threads * sizeof(struct work));
+	g_works = calloc(opt_n_threads, sizeof(struct work));
 	for(i = 0; i < opt_n_threads; i++)
 	{
-		memset(g_works[i].xnonce2, 0, 4);
 		g_works[i].thr_id = i;
 	}
+	gettimeofday(&timestr, NULL);
+	g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
 	
 	while (1) {
 		int failures = 0;
@@ -946,26 +947,25 @@ static void *stratum_thread(void *userdata)
 		    (strcmp(stratum.job.job_id, g_curr_job_id) || !g_work_time)) {
 			pthread_mutex_lock(&g_work_lock);
 			pthread_mutex_lock(&stratum.work_lock);
-			restart_threads();
 			applog(LOG_INFO, "New job_id: %s Diff: %d", stratum.job.job_id, (int) (stratum.job.diff));
+			g_prev_work_id = g_curr_work_id;
 			if (stratum.job.clean)
 			{
 				applog(LOG_INFO, "Stratum detected new block");
+				gettimeofday(&timestr, NULL);
+				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
+				restart_threads();
 			}
 			strcpy(g_prev_job_id, g_curr_job_id);
 			for(i = 0; i < 8; i++) g_prev_target[i] = g_curr_target[i];
-			g_prev_work_id = g_curr_work_id;
 			for(i = 0; i < opt_n_threads; i++)
 			{
 				g_works[i].job_id = g_prev_job_id;
 				g_works[i].target = g_prev_target;
-				g_works[i].work_id = &g_prev_work_id;
+				g_works[i].work_id = g_prev_work_id;
 			}
-			gettimeofday(&timestr, NULL);
-			g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
 			strcpy(g_curr_job_id, stratum.job.job_id);
 			diff_to_target(g_curr_target, stratum.job.diff / 65536.0);
-			applog(LOG_DEBUG, "Dispatching new work to GC3355 threads (0x%x)", g_curr_work_id);
 			for(i = 0; i < opt_n_threads; i++)
 			{
 				stratum_gen_work(&stratum, &g_works[i]);
@@ -1001,7 +1001,7 @@ static void *stratum_thread(void *userdata)
 				for(i = 0; i < opt_n_threads; i++)
 				{
 					g_works[i].target = g_prev_target;
-					g_works[i].work_id = &g_prev_work_id;
+					g_works[i].work_id = g_prev_work_id;
 				}
 				gettimeofday(&timestr, NULL);
 				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;

@@ -330,7 +330,7 @@ static void *gc3355_thread(void *userdata)
 	struct thr_info	*mythr = userdata;
 	int thr_id = mythr->id;
 	struct gc3355_dev *gc3355;
-	struct work work;
+	struct work work = {0};
 	unsigned char *scratchbuf = NULL;
 	int i, chips, rc;
 	struct timeval timestr;
@@ -338,6 +338,8 @@ static void *gc3355_thread(void *userdata)
 	struct chip_freq *chip_freq_curr;
 	unsigned char rptbuf[12];
 	
+	work.job_id = malloc(1);
+	work.thr_id = thr_id;
 	gettimeofday(&timestr, NULL);
 	gc3355 = &gc3355_devs[thr_id];
 	gc3355->id = thr_id;
@@ -452,7 +454,14 @@ static void *gc3355_thread(void *userdata)
 		if (work_restart[thr_id].restart || memcmp(work.data, g_works[thr_id].data, 76))
 		{
 			pthread_mutex_lock(&g_work_lock);
-			memcpy(&work, &g_works[thr_id], sizeof(struct work));
+			for(i = 0; i < 32; i++)
+				work.data[i] = g_works[thr_id].data[i];
+			work.target = g_works[thr_id].target;
+			free(work.job_id);
+			work.job_id = strdup(g_works[thr_id].job_id);
+			work.work_id = g_works[thr_id].work_id;
+			for(i = 0; i < 4; i++)
+				work.xnonce2[i] = g_works[thr_id].xnonce2[i];
 			pthread_mutex_unlock(&g_work_lock);
 			sha256_init(midstate);
 			sha256_transform(midstate, work.data, 0);
@@ -489,6 +498,7 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 	
 	if (gc3355->resend)
 	{
+		applog(LOG_DEBUG, "%d: Dispatching new work to GC3355 cores (0x%x)", gc3355->id, work->work_id);
 		unsigned char bin[156];
 		// swab for big endian
 		uint32_t midstate2[8];
@@ -508,7 +518,7 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 		memcpy(bin+36, (unsigned char *)midstate2, 32);
 		memcpy(bin+68, (unsigned char *)data2, 80);
 		memcpy(bin+148, "\xff\xff\xff\xff", 4);
-		memcpy(bin+152, (unsigned char[]){*work->work_id >> 24, *work->work_id >> 16, *work->work_id >> 8, *work->work_id}, 4);
+		memcpy(bin+152, (unsigned char[]){work->work_id >> 24, work->work_id >> 16, work->work_id >> 8, work->work_id}, 4);
 		// clear read buffer
 		read(gc3355->dev_fd, rptbuf, 12);
 		memset(rptbuf, 0, 12);
@@ -555,17 +565,16 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 				
 			stop = 1;
 			chip_id = nonce / (0xffffffff / gc3355->chips);
+			if(work_id != g_curr_work_id)
+			{
+				applog(LOG_DEBUG, "%d@%d: Work_id differs (%08x != %08x)", gc3355->id, chip_id, work_id, g_curr_work_id);
+				continue;
+			}
 			if(work_restart[thr_id].restart || !can_work)
 			{
 				applog(LOG_DEBUG, "%d@%d: Scanhash restart requested", gc3355->id, chip_id);
 				gc3355->last_nonce[chip_id] = nonce;
 				break;
-			}
-			if(work_id != g_curr_work_id)
-			{
-				applog(LOG_DEBUG, "%d@%d: Work_id differs (%08x != %08x)", gc3355->id, chip_id, work_id, g_curr_work_id);
-				gc3355->last_nonce[chip_id] = nonce;
-				continue;
 			}
 			gettimeofday(&timestr, NULL);
 			time_now = timestr.tv_sec + timestr.tv_usec / 1000000.0;
@@ -659,6 +668,7 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 					gc3355->hwe[chip_id] = 0;
 					gc3355->steps[chip_id] = 0;
 					gc3355->autotune_accepted[chip_id] = 0;
+					work_restart[thr_id].restart = 1;
 				}
 			}
 			pthread_mutex_unlock(&stats_lock);
