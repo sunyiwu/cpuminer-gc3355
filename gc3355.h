@@ -668,7 +668,6 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 					gc3355->hwe[chip_id] = 0;
 					gc3355->steps[chip_id] = 0;
 					gc3355->autotune_accepted[chip_id] = 0;
-					work_restart[thr_id].restart = 1;
 				}
 			}
 			pthread_mutex_unlock(&stats_lock);

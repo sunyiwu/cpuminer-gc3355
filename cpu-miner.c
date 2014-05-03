@@ -42,7 +42,7 @@
 #define PROGRAM_NAME		"minerd"
 #define DEF_RPC_URL		"http://127.0.0.1:9332/"
 
-#define MINER_VERSION	"v0.9c"
+#define MINER_VERSION	"v0.9d"
 
 enum workio_commands {
 	WC_SUBMIT_WORK,
