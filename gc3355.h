@@ -490,7 +490,6 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 	uint32_t *pdata = work->data;
 	const uint32_t *ptarget = work->target;
 	int i, ret;
-	unsigned char *ph;
 	int thr_id = gc3355->id;
 	unsigned char rptbuf[12];
 	struct timeval timestr;
@@ -559,9 +558,6 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			work_id = htobe32(work_id);
 			memcpy(pdata+19, &nonce, sizeof(nonce));
 			scrypt_1024_1_1_256(pdata, hash, midstate, scratchbuf);
-			ph = (unsigned char *)&nonce;
-			for(i=0; i<4; i++)
-				sprintf(bin+i*2, "%02x", *(ph++));
 				
 			stop = 1;
 			chip_id = nonce / (0xffffffff / gc3355->chips);
@@ -582,13 +578,13 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			if (hash[7] <= Htarg && fulltest(hash, ptarget))
 			{
 				add_hashes = nonce - gc3355->last_nonce[chip_id];
-				applog(LOG_DEBUG, "%d@%d %dMHz: Got nonce %s, Hash <= Htarget! (0x%x)", gc3355->id, chip_id, freq, bin, work_id);
+				applog(LOG_DEBUG, "%d@%d %dMHz: Got nonce %08x, Hash <= Htarget! (0x%x) %.1lf KH/s", gc3355->id, chip_id, freq, nonce, work_id, (add_hashes / (time_now - gc3355->time_now[chip_id])) / 1000);
 			}
 			else
 			{
 				add_hwe = 1;
 				stop = -1;
-				applog(LOG_DEBUG, "%d@%d %dMHz: Got nonce %s, Invalid nonce! (%d/%d) (0x%x)", gc3355->id, chip_id, freq, bin, gc3355->hwe[chip_id] + 1, GC3355_OVERCLOCK_MAX_HWE, work_id);
+				applog(LOG_DEBUG, "%d@%d %dMHz: Got nonce %08x, Invalid nonce! (%d/%d) (0x%x)", gc3355->id, chip_id, freq, nonce, gc3355->hwe[chip_id] + 1, GC3355_OVERCLOCK_MAX_HWE, work_id);
 			}
 			pthread_mutex_lock(&stats_lock);
 			gc3355->hashes[chip_id] += add_hashes;
@@ -596,15 +592,12 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			gc3355->hwe[chip_id] += add_hwe;
 			gc3355->time_spent[chip_id] += time_now - gc3355->time_now[chip_id];
 			gc3355->hashrate[chip_id] = gc3355->hashes[chip_id] / gc3355->time_spent[chip_id];
-			if(!add_hwe)
-				gc3355->last_nonce[chip_id] = nonce;
-			else
-				gc3355->last_nonce[chip_id] = chip_id * (0xffffffff / gc3355->chips);
+			gc3355->last_nonce[chip_id] = nonce;
 			gc3355->time_now[chip_id] = time_now;
 			if(opt_gc3355_autotune && gc3355->adjust[chip_id] > 0)
 			{
 				gc3355->steps[chip_id] += stratum.job.diff;
-				if(gc3355->hwe[chip_id] >= GC3355_OVERCLOCK_MAX_HWE || (gc3355->hwe[chip_id] > 0 && (GC3355_OVERCLOCK_ADJUST_STEPS / 2) / stratum.job.diff >= 2 && gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS / 2 && gc3355->hashrate[chip_id] < GC3355_HASH_SPEED * freq * 0.8))
+				if(gc3355->hwe[chip_id] >= GC3355_OVERCLOCK_MAX_HWE || (gc3355->hwe[chip_id] > 0 && (GC3355_OVERCLOCK_ADJUST_STEPS / 2) / stratum.job.diff >= 3 && gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS / 2 && gc3355->hashrate[chip_id] < GC3355_HASH_SPEED * freq * 0.8))
 				{
 					freq = prev_freq(gc3355, chip_id);
 					gc3355->adjust[chip_id] = freq;
