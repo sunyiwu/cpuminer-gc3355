@@ -1195,8 +1195,10 @@ static bool api_parse_set(const char *api_set, json_t *req, json_t *obj, json_t 
 #endif
 
 #ifndef WIN32
-static void api_request_handler(int sock)
+static void *api_request_handler(void *socket)
 {
+	pthread_detach(pthread_self());
+	int sock = *(int*)socket;
     int i, j, read_size, read_pos, buffer_size = 256, err_size = 256;
     char request[buffer_size], *message, *pos, err_msg[err_size];
 	const char *api_get, *api_set;
@@ -1261,7 +1263,8 @@ read:
 		goto write;
     }
 	close(sock);
-    return;
+	free(socket);
+    return NULL;
 err:
 	applog(LOG_ERR, "%s", err_msg);
 	err = json_integer(1);
@@ -1282,9 +1285,10 @@ write:
 static void *api_thread(void *userdata)
 {
 	struct thr_info *mythr = userdata;
-    int new_socket, c, yes;
+    int new_socket, *psocket, c, yes;
     struct sockaddr_in server, client;
 	char client_ip[INET_ADDRSTRLEN];
+	pthread_t api_request_thread;
     api_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (api_sock == -1)
     {
@@ -1310,8 +1314,13 @@ static void *api_thread(void *userdata)
     while((new_socket = accept(api_sock, (struct sockaddr *)&client, (socklen_t*)&c)))
     {
 		inet_ntop(AF_INET, &(client.sin_addr.s_addr), client_ip, INET_ADDRSTRLEN);
-		//applog(LOG_INFO, "API: Client %s connected", client_ip);
-		api_request_handler(new_socket);
+		applog(LOG_DEBUG, "API: Client %s connected", client_ip);
+		psocket = malloc(sizeof(int));
+		*psocket = new_socket;
+        if(unlikely(pthread_create(&api_request_thread, NULL, api_request_handler, (void*)psocket)))
+        {
+            applog(LOG_ERR, "API: Could not create request thread");
+        }
 		usleep(100000);
     }
     if (new_socket < 0)
