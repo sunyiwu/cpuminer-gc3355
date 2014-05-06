@@ -1216,9 +1216,12 @@ static bool api_parse_set(const char *api_set, json_t *req, json_t *obj, json_t 
 					for(j = 0; j < json_array_size(chips); j++)
 					{
 						chip = json_array_get(chips, j);
-						freq = json_integer_value(chip);
+						freq = fix_freq(json_integer_value(chip));
 						pthread_mutex_lock(&stats_lock);
-						gc3355_set_core_freq(&gc3355_devs[i], j, fix_freq(freq));
+						if(gc3355_devs[i].freq[j] != freq)
+						{
+							gc3355_set_core_freq(&gc3355_devs[i], j, freq);
+						}
 						pthread_mutex_unlock(&stats_lock);
 					}
 				}
