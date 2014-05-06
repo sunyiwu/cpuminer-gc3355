@@ -569,15 +569,10 @@ static void gc3355_restart(struct gc3355_dev *gc3355)
 		gc3355->hashes[i] = 0;
 		gc3355->time_now[i] = 0;
 		gc3355->time_spent[i] = 0;
-		gc3355->total_hwe[i] = 0;
 		gc3355->hwe[i] = 0;
 		gc3355->adjust[i] = GC3355_MAX_FREQ;
 		gc3355->steps[i] = 0;
-		gc3355->autotune_accepted[i] = 0;
-		gc3355->accepted[i] = 0;
-		gc3355->rejected[i] = 0;
 		gc3355->hashrate[i] = 0;
-		gc3355->shares[i] = 0;
 		gc3355->last_share[i] = timestr.tv_sec;
 		if(i < GC3355_MAX_CHIPS)
 			gc3355_set_core_freq(gc3355, i, gc3355->freq[i]);
