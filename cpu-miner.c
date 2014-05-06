@@ -67,19 +67,20 @@ static const char *algo_names[] = {
 };
 
 #define GC3355_DEFAULT_CHIPS 5
-#define API_DEFAUKT_PORT 4028
+#define API_DEFAULT_PORT 4028
 #define API_QUEUE 16
-#define API_STATS "stats"
-#define API_MINER_START_TIME "t"
-#define API_DEVICES "d"
-#define API_CHIPS "c"
-#define API_LAST_SHARE "l"
-#define API_CHIP_ACCEPTED "ac"
-#define API_CHIP_REJECTED "re"
-#define API_CHIP_HW_ERRORS "hw"
-#define API_CHIP_FREQUENCY "fr"
-#define API_CHIP_HASHRATE "ha"
-#define API_CHIP_SHARES "sh"
+#define API_GET_STATS "stats"
+#define API_SET_FREQUENCY "frequency"
+#define API_MINER_START_TIME "start_time"
+#define API_DEVICES "devices"
+#define API_CHIPS "chips"
+#define API_LAST_SHARE "last_share"
+#define API_CHIP_ACCEPTED "accepted"
+#define API_CHIP_REJECTED "rejected"
+#define API_CHIP_HW_ERRORS "hw_errors"
+#define API_CHIP_FREQUENCY "frequency"
+#define API_CHIP_HASHRATE "hashrate"
+#define API_CHIP_SHARES "shares"
 #define REFRESH_INTERVAL 2
 
 struct gc3355_dev {
@@ -138,7 +139,7 @@ int stratum_thr_id = -1;
 int api_thr_id = -1;
 int tui_main_thr_id = -1;
 int tui_user_thr_id = -1;
-unsigned short opt_api_port = API_DEFAUKT_PORT;
+unsigned short opt_api_port = API_DEFAULT_PORT;
 int api_sock;
 struct work_restart *work_restart = NULL;
 static struct stratum_ctx stratum;
@@ -1141,12 +1142,102 @@ out:
 }
 
 #ifndef WIN32
+static bool api_parse_get(const char *api_get, json_t *obj, json_t *err)
+{
+	json_t *dev, *devs, *chips, *chip;
+	int i, j;
+	if(!strcmp(api_get, API_GET_STATS))
+	{
+		json_object_set_new(obj, API_MINER_START_TIME, json_integer(gc3355_time_start));
+		devs = json_object();
+		pthread_mutex_lock(&stats_lock);
+		for(i = 0; i < opt_n_threads; i++)
+		{
+			dev = json_object();
+			chips = json_array();
+			for(j = 0; j < gc3355_devs[i].chips; j++)
+			{
+				chip = json_object();
+				json_object_set_new(chip, API_CHIP_ACCEPTED, json_integer(gc3355_devs[i].accepted[j]));
+				json_object_set_new(chip, API_CHIP_REJECTED, json_integer(gc3355_devs[i].rejected[j]));
+				json_object_set_new(chip, API_CHIP_HW_ERRORS, json_integer(gc3355_devs[i].total_hwe[j]));
+				json_object_set_new(chip, API_CHIP_FREQUENCY, json_integer(gc3355_devs[i].freq[j]));
+				json_object_set_new(chip, API_CHIP_HASHRATE, json_integer(gc3355_devs[i].hashrate[j]));
+				json_object_set_new(chip, API_CHIP_SHARES, json_integer(gc3355_devs[i].shares[j]));
+				json_object_set_new(chip, API_LAST_SHARE, json_integer(gc3355_devs[i].last_share[j]));
+				json_array_append_new(chips, chip);
+			}
+			json_object_set_new(dev, API_CHIPS, chips);
+			char *path = gc3355_devs[i].devname;
+			char *base = strrchr(path, '/');
+			json_object_set_new(devs, base ? base + 1 : path, dev);
+		}
+		pthread_mutex_unlock(&stats_lock);
+		json_object_set_new(obj, API_DEVICES, devs);
+		return true;
+	}
+	return false;
+}
+#endif
+
+#ifndef WIN32
+static bool api_parse_set(const char *api_set, json_t *req, json_t *obj, json_t *err)
+{
+	json_t *dev, *devs, *chips, *chip;
+	const char *devname;
+	char *path, *base;
+	int i, j;
+	unsigned short freq;
+	void *iter;
+	if(!strcmp(api_set, API_SET_FREQUENCY))
+	{
+		devs = json_object_get(req, API_DEVICES);
+		if (!devs || !json_is_object(devs))
+		{
+			return false;
+		}
+		iter = json_object_iter(devs);
+		while(iter)
+		{
+			devname = json_object_iter_key(iter);
+			dev = json_object_iter_value(iter);
+			for(i = 0; i < opt_n_threads; i++)
+			{
+				path = gc3355_devs[i].devname;
+				base = strrchr(path, '/');
+				if(!strcmp(devname, base + 1))
+				{
+					chips = json_object_get(dev, API_CHIPS);
+					if (!chips || !json_is_array(chips))
+					{
+						return false;
+					}
+					applog(LOG_DEBUG, "API: %s: Change frequency", devname);
+					for(j = 0; j < json_array_size(chips); j++)
+					{
+						chip = json_array_get(chips, j);
+						freq = json_integer_value(chip);
+						pthread_mutex_lock(&stats_lock);
+						gc3355_set_core_freq(&gc3355_devs[i], j, fix_freq(freq));
+						pthread_mutex_unlock(&stats_lock);
+					}
+				}
+			}
+			iter = json_object_iter_next(devs, iter);
+		}
+		return true;
+	}
+	return false;
+}
+#endif
+
+#ifndef WIN32
 static void api_request_handler(int sock)
 {
     int i, j, read_size, read_pos, buffer_size = 256, err_size = 256;
     char request[buffer_size], *message, *pos, err_msg[err_size];
-	const char *api_get;
-	json_t *req, *get, *obj, *dev, *devs, *chips, *chip, *err;
+	const char *api_get, *api_set;
+	json_t *obj, *req, *get, *set, *err;
 	json_error_t json_err;
 read:
 	memset(err_msg, 0, err_size);
@@ -1169,46 +1260,41 @@ read:
 		get = json_object_get(req, "get");
 		if (!get || !json_is_string(get))
 		{
-			snprintf(err_msg, err_size, "API: Unrecognized JSON response: %s", request);
-			goto err;
-		}
-		api_get = json_string_value(get);
-		if(!strcmp(api_get, API_STATS))
-		{
-			json_object_set_new(obj, API_MINER_START_TIME, json_integer(gc3355_time_start));
-			err = json_integer(0);
-			devs = json_object();
-			pthread_mutex_lock(&stats_lock);
-			for(i = 0; i < opt_n_threads; i++)
+			set = json_object_get(req, "set");
+			if (!set || !json_is_string(set))
 			{
-				dev = json_object();
-				chips = json_array();
-				for(j = 0; j < gc3355_devs[i].chips; j++)
-				{
-					chip = json_object();
-					json_object_set_new(chip, API_CHIP_ACCEPTED, json_integer(gc3355_devs[i].accepted[j]));
-					json_object_set_new(chip, API_CHIP_REJECTED, json_integer(gc3355_devs[i].rejected[j]));
-					json_object_set_new(chip, API_CHIP_HW_ERRORS, json_integer(gc3355_devs[i].total_hwe[j]));
-					json_object_set_new(chip, API_CHIP_FREQUENCY, json_integer(gc3355_devs[i].freq[j]));
-					json_object_set_new(chip, API_CHIP_HASHRATE, json_integer(gc3355_devs[i].hashrate[j]));
-					json_object_set_new(chip, API_CHIP_SHARES, json_integer(gc3355_devs[i].shares[j]));
-					json_object_set_new(chip, API_LAST_SHARE, json_integer(gc3355_devs[i].last_share[j]));
-					json_array_append_new(chips, chip);
-				}
-				json_object_set_new(dev, API_CHIPS, chips);
-				char *path = gc3355_devs[i].devname;
-				char *base = strrchr(path, '/');
-				json_object_set_new(devs, base ? base + 1 : path, dev);
+				snprintf(err_msg, err_size, "API: Unrecognized JSON query: %s", request);
+				goto err;
 			}
-			pthread_mutex_unlock(&stats_lock);
-			json_object_set_new(obj, API_DEVICES, devs);
+			else
+			{
+				api_set = json_string_value(set);
+				if(!api_parse_set(api_set, req, obj, err))
+				{
+					snprintf(err_msg, err_size, "API: Unrecognized SET command: %s", request);
+					goto err;
+				}
+				else
+				{
+					applog(LOG_DEBUG, "API: SET: %s", api_set);
+					err = json_integer(0);
+				}
+			}
 		}
 		else
 		{
-			snprintf(err_msg, err_size, "API: Unrecognized Command: %s", api_get);
-			goto err;
+			api_get = json_string_value(get);
+			if(!api_parse_get(api_get, obj, err))
+			{
+				snprintf(err_msg, err_size, "API: Unrecognized GET command: %s", request);
+				goto err;
+			}
+			else
+			{
+				applog(LOG_DEBUG, "API: GET: %s", api_get);
+				err = json_integer(0);
+			}
 		}
-		applog(LOG_INFO, "API: Command: %s", api_get);
 		goto write;
     }
 	close(sock);
@@ -1446,6 +1532,7 @@ static void parse_cmdline(int argc, char *argv[])
 
 static void clean_up()
 {
+	can_work = 0x0;
 	if(opt_curses)
 	{
 		applog(LOG_INFO, "Clean up");
