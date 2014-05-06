@@ -98,6 +98,10 @@ static struct dev_freq *dev_freq_root;
 #define GC3355_MAX_FREQ 1400
 #define GC3355_HASH_SPEED 84.705882
 #define GC3355_TRESHOLD 0.98
+#define GC3355_MAX_CHIPS 8
+#define GC3355_USB_STR "GC3355 5-chip USB-Mini Miner"
+#define GC3355_BLADE_STR "GC3355 40-chip G-Blade Miner"
+#define GC3355_NONE_STR "Unknown GC3355 Miner"
 
 /* external functions */
 extern void scrypt_1024_1_1_256(const uint32_t *input, uint32_t *output,
@@ -127,7 +131,7 @@ static int gc3355_open(struct gc3355_dev *gc3355, speed_t baud)
 #ifdef WIN32
 	DWORD	timeout = 1;
 
-	applog(LOG_INFO, "%d: open device %s", gc3355->id, gc3355->devname);
+	applog(LOG_INFO, "%d: Open device %s", gc3355->id, gc3355->devname);
 	if (gc3355->dev_fd > 0)
 		gc3355_close(gc3355->dev_fd);
 
@@ -187,7 +191,7 @@ static int gc3355_open(struct gc3355_dev *gc3355, speed_t baud)
 	struct termios	my_termios;
 	int fd;
 
-	applog(LOG_INFO, "%d: open device %s", gc3355->id, gc3355->devname);
+	applog(LOG_INFO, "%d: Open device %s", gc3355->id, gc3355->devname);
 	if (gc3355->dev_fd > 0)
 		gc3355_close(gc3355->dev_fd);
 
@@ -298,13 +302,66 @@ static uint32_t gc3355_get_firmware_version(struct gc3355_dev *gc3355)
 	return fw_version;
 }
 
-static void gc3355_set_core_freq(struct gc3355_dev *gc3355, int chip_id, unsigned short freq)
+static void gc3355_set_core_freq(struct gc3355_dev *gc3355, const short chip_id, unsigned short freq)
 {
-	const uint16_t x = ((freq / 25) * 0x20) + 0x7fe0;
-	unsigned char cmds[] = {0x55, 0xaa, 0xe0 + chip_id, 0, 0x05, 0, x & 0xff, x >> 8};
-	gc3355_write(gc3355, cmds, 8);
-	gc3355->freq[chip_id] = freq - freq % 25;
-	applog(LOG_INFO, "%d@%d: Set GC3355 core frequency to %dMhz", gc3355->id, chip_id, gc3355->freq[chip_id]);
+	// See https://github.com/gridseed/gc3355-doc/blob/master/GC3355_Register_Spec.pdf
+	int i;
+	const float mhz = freq;
+	uint8_t freq_div, freq_mult, last_freq_mult;  // mhz = (25 / freq_div * freq_mult)
+	float actual_mhz, last_actual_mhz = -1;
+	const uint8_t pll_bypass = 1;
+	const uint8_t pll_bandselect = 0;
+	const uint8_t pll_outdiv = 0;
+	const uint8_t core_clk_out1_diven = 0;
+	const uint8_t core_clk_sel1 = 0;
+	const uint8_t core_clk_sel0 = 0;
+	const uint8_t pll_clk_gate = 0;
+	const uint8_t pll_recfg = 1;
+	const uint8_t cfg_cpm = 1;
+	unsigned char buf[8];
+	uint32_t cfg;
+	for (freq_div = 1; freq_div <= 32; ++freq_div)
+	{
+		freq_mult = mhz * freq_div / 25;
+		if (freq_mult > 0x80)
+			freq_mult = 0x80;
+		actual_mhz = 25. / freq_div * freq_mult;
+		if (last_actual_mhz > actual_mhz)
+		{
+			--freq_div;
+			freq_mult = last_freq_mult;
+			break;
+		}
+		if (actual_mhz > mhz - .5)
+			break;
+		last_actual_mhz = actual_mhz;
+		last_freq_mult = freq_mult;
+	}
+	const uint8_t pll_F = freq_mult - 1;
+	const uint8_t pll_R = freq_div - 1;
+	cfg = (pll_bypass << 31) | (pll_bandselect << 30) | (pll_outdiv << 28) | (pll_F << 21) | (pll_R << 16) | (core_clk_out1_diven << 6) | (core_clk_sel1 << 5) | (core_clk_sel0 << 4) | (pll_clk_gate << 3) | (pll_recfg << 2) | (cfg_cpm << 0);
+	buf[0] = 0x55;
+	buf[1] = 0xaa;
+	buf[2] = 0xe0 + (chip_id == -1 ? 0xf : chip_id % GC3355_MAX_CHIPS);
+	buf[3] = 0;
+	buf[4] = cfg & 0xff;
+	buf[5] = (cfg >> 8) & 0xff;
+	buf[6] = (cfg >> 16) & 0xff;
+	buf[7] = (cfg >> 24) & 0xff;
+	gc3355_write(gc3355, buf, 8);
+	if(chip_id >= 0)
+	{
+		gc3355->freq[chip_id] = freq;
+		applog(LOG_INFO, "%d@%d: Set GC3355 core frequency to %dMhz", gc3355->id, chip_id, gc3355->freq[chip_id]);
+	}
+	else
+	{
+		for(i = 0; i < gc3355->chips; i++)
+		{
+			gc3355->freq[i] = freq;
+		}
+		applog(LOG_INFO, "%d: Set GC3355 core frequency to %dMhz", gc3355->id, freq);
+	}
 }
 
 static unsigned short fix_freq(unsigned short freq)
@@ -354,26 +411,34 @@ static void *gc3355_thread(void *userdata)
 		can_start++;
 		gc3355_exit(gc3355);
 	}
+	gc3355_send_cmds(gc3355, single_cmd_init);
+	sleep(1);
 	// clear read buffer
-	read(gc3355->dev_fd, rptbuf, 12);
-	memset(rptbuf, 0, 12);
-	applog(LOG_INFO, "%d: Open UART device %s", thr_id, gc3355->devname);
+	do
+	{
+		unsigned char buf[1];
+		rc = read(gc3355->dev_fd, buf, 1);
+	}
+	while(rc);
 	uint32_t fw_version = gc3355_get_firmware_version(gc3355);
 	applog(LOG_INFO, "%d: Firmware version: 0x%08x", thr_id, fw_version);
 	gc3355->chips = opt_gc3355_chips;
 	if((fw_version & 0xffff) == 0x1401)
 	{
+		gc3355->type = 1;
 		gc3355->chips = 5;
-		applog(LOG_INFO, "%d: GC3355 5-chip USB-Mini Miner detected", thr_id);
+		applog(LOG_INFO, "%d: %s detected", thr_id, GC3355_USB_STR);
 	}
 	else if((fw_version & 0xffff) == 0x1402)
 	{
+		gc3355->type = 2;
 		gc3355->chips = 40;
-		applog(LOG_INFO, "%d: GC3355 40-chip G-Blade Miner detected", thr_id);
+		applog(LOG_INFO, "%d: %s detected", thr_id, GC3355_BLADE_STR);
 	}
 	else
 	{
-		applog(LOG_INFO, "%d: Unknown GC3355 Miner detected (chips=%d)", thr_id, gc3355->chips);
+		gc3355->type = 0;
+		applog(LOG_INFO, "%d: %s detected (chips=%d)", thr_id, GC3355_NONE_STR, gc3355->chips);
 	}
 	
 	gc3355->freq = calloc(gc3355->chips, sizeof(unsigned short));
@@ -397,7 +462,6 @@ static void *gc3355_thread(void *userdata)
 		gc3355->last_share[i] = timestr.tv_sec;
 		gc3355->freq[i] = fix_freq(opt_frequency);
 	}
-	
 	for(dev_freq_curr = dev_freq_root; dev_freq_curr != NULL; dev_freq_curr = dev_freq_curr->next)
 	{
 		if(dev_freq_curr->devname != NULL && !strcmp(gc3355->devname, dev_freq_curr->devname))
@@ -415,9 +479,9 @@ static void *gc3355_thread(void *userdata)
 		if(dev_freq_curr->next == NULL) break;
 	}
 	
-	gc3355_send_cmds(gc3355, single_cmd_init);
 	for(i = 0; i < gc3355->chips; i++)
 	{
+		if(i == GC3355_MAX_CHIPS) break;
 		gc3355_set_core_freq(gc3355, i, gc3355->freq[i]);
 	}
 	rc = 0;
@@ -484,6 +548,42 @@ static void *gc3355_thread(void *userdata)
 	gc3355_exit(gc3355);
 }
 
+static void gc3355_restart(struct gc3355_dev *gc3355)
+{
+	int i, ret;
+	struct timeval timestr;
+	gettimeofday(&timestr, NULL);
+	applog(LOG_INFO, "%d: Restarting GC3355", gc3355->id);
+	gc3355_send_cmds(gc3355, single_cmd_init);
+	sleep(1);
+	// clear read buffer
+	do
+	{
+		unsigned char buf[1];
+		ret = read(gc3355->dev_fd, buf, 1);
+	}
+	while(ret);
+	for(i = 0; i < gc3355->chips; i++)
+	{
+		gc3355->last_nonce[i] = 0;
+		gc3355->hashes[i] = 0;
+		gc3355->time_now[i] = 0;
+		gc3355->time_spent[i] = 0;
+		gc3355->total_hwe[i] = 0;
+		gc3355->hwe[i] = 0;
+		gc3355->adjust[i] = GC3355_MAX_FREQ;
+		gc3355->steps[i] = 0;
+		gc3355->autotune_accepted[i] = 0;
+		gc3355->accepted[i] = 0;
+		gc3355->rejected[i] = 0;
+		gc3355->hashrate[i] = 0;
+		gc3355->shares[i] = 0;
+		gc3355->last_share[i] = timestr.tv_sec;
+		if(i < GC3355_MAX_CHIPS)
+			gc3355_set_core_freq(gc3355, i, gc3355->freq[i]);
+	}
+}
+
 /* scan hash in GC3355 chips */
 static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigned char *scratchbuf, uint32_t *midstate)
 {
@@ -497,6 +597,20 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 	
 	if (gc3355->resend)
 	{
+		if(opt_gc3355_timeout > 0)
+		{
+			unsigned int last = 0;
+			for(i = 0; i < gc3355->chips; i++)
+			{
+				if(gc3355->last_share[i] > last)
+					last = gc3355->last_share[i];
+			}
+			gettimeofday(&timestr, NULL);
+			if(timestr.tv_sec - last > opt_gc3355_timeout)
+			{
+				gc3355_restart(gc3355);
+			}
+		}
 		applog(LOG_DEBUG, "%d: Dispatching new work to GC3355 cores (0x%x)", gc3355->id, work->work_id);
 		unsigned char bin[156];
 		// swab for big endian
@@ -519,8 +633,12 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 		memcpy(bin+148, "\xff\xff\xff\xff", 4);
 		memcpy(bin+152, (unsigned char[]){work->work_id >> 24, work->work_id >> 16, work->work_id >> 8, work->work_id}, 4);
 		// clear read buffer
-		read(gc3355->dev_fd, rptbuf, 12);
-		memset(rptbuf, 0, 12);
+		do
+		{
+			unsigned char buf[1];
+			ret = read(gc3355->dev_fd, buf, 1);
+		}
+		while(ret);
 		gc3355_send_cmds(gc3355, single_cmd_reset);
 		gc3355_write(gc3355, bin, 156);
 		gc3355->resend = false;
@@ -577,6 +695,10 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			freq = gc3355->freq[chip_id];
 			if (hash[7] <= Htarg && fulltest(hash, ptarget))
 			{
+				if(nonce < gc3355->last_nonce[chip_id])
+				{
+					gc3355->last_nonce[chip_id] = chip_id * (0xffffffff / gc3355->chips);
+				}
 				add_hashes = nonce - gc3355->last_nonce[chip_id];
 				applog(LOG_DEBUG, "%d@%d %dMHz: Got nonce %08x, Hash <= Htarget! (0x%x) %.1lf KH/s", gc3355->id, chip_id, freq, nonce, work_id, (add_hashes / (time_now - gc3355->time_now[chip_id])) / 1000);
 			}
@@ -594,73 +716,84 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			gc3355->hashrate[chip_id] = gc3355->hashes[chip_id] / gc3355->time_spent[chip_id];
 			gc3355->last_nonce[chip_id] = nonce;
 			gc3355->time_now[chip_id] = time_now;
-			if(opt_gc3355_autotune && gc3355->adjust[chip_id] > 0)
+			if(opt_gc3355_autotune)
 			{
-				gc3355->steps[chip_id] += stratum.job.diff;
-				if(gc3355->hwe[chip_id] >= GC3355_OVERCLOCK_MAX_HWE || (gc3355->hwe[chip_id] > 0 && (GC3355_OVERCLOCK_ADJUST_STEPS / 2) / stratum.job.diff >= 3 && gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS / 2 && gc3355->hashrate[chip_id] < GC3355_HASH_SPEED * freq * 0.8))
+				if(gc3355->type == 0)
 				{
-					freq = prev_freq(gc3355, chip_id);
-					gc3355->adjust[chip_id] = freq;
+					applog(LOG_ERR, "%d: %s cannot be autotuned", gc3355->id, GC3355_NONE_STR);
 				}
-				else
+				else if(gc3355->type == 2)
 				{
-					unsigned short steps = GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id];
-					if(GC3355_OVERCLOCK_ADJUST_MIN > gc3355->autotune_accepted[chip_id] && steps < stratum.job.diff * (GC3355_OVERCLOCK_ADJUST_MIN - gc3355->autotune_accepted[chip_id]))
+					applog(LOG_ERR, "%d: %s cannot be autotuned", gc3355->id, GC3355_BLADE_STR);
+				}
+				else if(gc3355->type == 1 && gc3355->adjust[chip_id] > 0)
+				{
+					gc3355->steps[chip_id] += stratum.job.diff;
+					if(gc3355->hwe[chip_id] >= GC3355_OVERCLOCK_MAX_HWE || (gc3355->hwe[chip_id] > 0 && (GC3355_OVERCLOCK_ADJUST_STEPS / 2) / stratum.job.diff >= 3 && gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS / 2 && gc3355->hashrate[chip_id] < GC3355_HASH_SPEED * freq * 0.8))
 					{
-						steps = stratum.job.diff * (GC3355_OVERCLOCK_ADJUST_MIN - gc3355->autotune_accepted[chip_id]);
-					}
-					if(gc3355->hashrate[chip_id] < GC3355_HASH_SPEED * freq * GC3355_TRESHOLD)
-					{
-						unsigned short prev_f = prev_freq(gc3355, chip_id);
-						if(gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS && gc3355->autotune_accepted[chip_id] >= GC3355_OVERCLOCK_ADJUST_MIN)
-						{
-							if(prev_f != freq)
-							{
-								freq = prev_f;
-								gc3355->adjust[chip_id] = freq;
-							}
-							else
-							{
-								gc3355->adjust[chip_id] = -1;
-								applog(LOG_DEBUG, "%d@%d: autotune stopped", gc3355->id, chip_id);
-							}
-						}
-						else
-						{
-							applog(LOG_DEBUG, "%d@%d: ~%d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, steps, prev_f);
-						}
+						freq = prev_freq(gc3355, chip_id);
+						gc3355->adjust[chip_id] = freq;
 					}
 					else
 					{
-						unsigned short next_f = next_freq(gc3355, chip_id);
-						if(gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS)
+						unsigned short steps = GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id];
+						if(GC3355_OVERCLOCK_ADJUST_MIN > gc3355->autotune_accepted[chip_id] && steps < stratum.job.diff * (GC3355_OVERCLOCK_ADJUST_MIN - gc3355->autotune_accepted[chip_id]))
 						{
-							if(next_f != freq)
-								freq = next_f;
+							steps = stratum.job.diff * (GC3355_OVERCLOCK_ADJUST_MIN - gc3355->autotune_accepted[chip_id]);
+						}
+						if(gc3355->hashrate[chip_id] < GC3355_HASH_SPEED * freq * GC3355_TRESHOLD)
+						{
+							unsigned short prev_f = prev_freq(gc3355, chip_id);
+							if(gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS && gc3355->autotune_accepted[chip_id] >= GC3355_OVERCLOCK_ADJUST_MIN)
+							{
+								if(prev_f != freq)
+								{
+									freq = prev_f;
+									gc3355->adjust[chip_id] = freq;
+								}
+								else
+								{
+									gc3355->adjust[chip_id] = -1;
+									applog(LOG_DEBUG, "%d@%d: autotune stopped", gc3355->id, chip_id);
+								}
+							}
 							else
 							{
-								gc3355->adjust[chip_id] = -1;
-								applog(LOG_DEBUG, "%d@%d: autotune stopped", gc3355->id, chip_id);
+								applog(LOG_DEBUG, "%d@%d: ~%d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, steps, prev_f);
 							}
 						}
 						else
 						{
-
-							if(next_f != freq)
-								applog(LOG_DEBUG, "%d@%d: ~%d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, steps, next_f);
+							unsigned short next_f = next_freq(gc3355, chip_id);
+							if(gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS)
+							{
+								if(next_f != freq)
+									freq = next_f;
+								else
+								{
+									gc3355->adjust[chip_id] = -1;
+									applog(LOG_DEBUG, "%d@%d: autotune stopped", gc3355->id, chip_id);
+								}
+							}
 							else
-								applog(LOG_DEBUG, "%d@%d: ~%d steps until autotune stops", gc3355->id, chip_id, steps);
+							{
+
+								if(next_f != freq)
+									applog(LOG_DEBUG, "%d@%d: ~%d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, steps, next_f);
+								else
+									applog(LOG_DEBUG, "%d@%d: ~%d steps until autotune stops", gc3355->id, chip_id, steps);
+							}
 						}
 					}
-				}
-				if(freq != gc3355->freq[chip_id])
-				{
-					gc3355->hashes[chip_id] = 0;
-					gc3355->time_spent[chip_id] = 0;
-					gc3355_set_core_freq(gc3355, chip_id, freq);
-					gc3355->hwe[chip_id] = 0;
-					gc3355->steps[chip_id] = 0;
-					gc3355->autotune_accepted[chip_id] = 0;
+					if(freq != gc3355->freq[chip_id])
+					{
+						gc3355->hashes[chip_id] = 0;
+						gc3355->time_spent[chip_id] = 0;
+						gc3355_set_core_freq(gc3355, chip_id, freq);
+						gc3355->hwe[chip_id] = 0;
+						gc3355->steps[chip_id] = 0;
+						gc3355->autotune_accepted[chip_id] = 0;
+					}
 				}
 			}
 			pthread_mutex_unlock(&stats_lock);

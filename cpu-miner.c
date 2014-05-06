@@ -42,7 +42,7 @@
 #define PROGRAM_NAME		"minerd"
 #define DEF_RPC_URL		"http://127.0.0.1:9332/"
 
-#define MINER_VERSION	"v0.9d"
+#define MINER_VERSION	"v0.9e"
 
 enum workio_commands {
 	WC_SUBMIT_WORK,
@@ -85,6 +85,7 @@ static const char *algo_names[] = {
 struct gc3355_dev {
 	int	id;
 	int	dev_fd;
+	unsigned char type;
 	unsigned char chips;
 	bool resend;
 	char *devname;
@@ -111,6 +112,7 @@ static unsigned short opt_frequency = 600;
 static char *opt_gc3355_frequency = NULL;
 static char opt_gc3355_autotune = 0x0;
 static unsigned short opt_gc3355_chips = GC3355_DEFAULT_CHIPS;
+static unsigned int opt_gc3355_timeout = 0;
 static struct gc3355_dev *gc3355_devs;
 static unsigned int gc3355_time_start;
 
@@ -169,6 +171,7 @@ Options:\n\
 	  --gc3355-freq=DEV0:F0:CHIP0,...,DEVn:Fn:CHIPn		individual per chip frequency setting\n\
   -A, --gc3355-autotune  								auto overclocking each GC3355 chip (default: no)\n\
   -c, --gc3355-chips=N  								# of GC3355 chips (default: 5)\n\
+  -x, --gc3355-timeout=N  								max. time after no share is submitted before restarting GC3355 chips (default: never)\n\
   -a, --api-port=PORT  									set the JSON API port (default: 4028)\n\
   -t, --text											disable curses tui, output text\n\
   -L, --log												file logging\n\
@@ -196,6 +199,7 @@ static struct option const options[] = {
 	{ "gc3355-freq", 1, NULL, 'f' },
 	{ "gc3355-autotune", 0, NULL, 'A' },
 	{ "gc3355-chips", 1, NULL, 'c' },
+	{ "gc3355-timeout", 1, NULL, 'x' },
 	{ "api-port", 1, NULL, 'a' },
 	{ "text", 0, NULL, 't' },
 	{ "log", 0, NULL, 'L' },
@@ -701,7 +705,7 @@ static void share_result(int result, const char *reason, uint32_t work_id)
 	if(result)
 	{
 		gc3355_devs[thr_id].accepted[chip_id]++;
-		if(opt_gc3355_autotune && gc3355_devs[thr_id].adjust[chip_id] > 0)
+		if(opt_gc3355_autotune && gc3355_devs[thr_id].type == 1 && gc3355_devs[thr_id].adjust[chip_id] > 0)
 		{
 			gc3355_devs[thr_id].autotune_accepted[chip_id]++;
 		}
@@ -1310,6 +1314,9 @@ static void parse_arg (int key, char *arg)
 		break;
 	case 'c':
 		opt_gc3355_chips = atoi(arg);
+		break;
+	case 'x':
+		opt_gc3355_timeout = atoi(arg);
 		break;
 	case 'a':
 		opt_api_port = atoi(arg);
