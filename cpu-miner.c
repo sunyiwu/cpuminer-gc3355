@@ -38,6 +38,7 @@
 #include <curl/curl.h>
 #include "compat.h"
 #include "miner.h"
+#include "elist.h"
 
 #define PROGRAM_NAME		"minerd"
 #define DEF_RPC_URL		"http://127.0.0.1:9332/"
@@ -228,25 +229,13 @@ struct work {
 	unsigned short thr_id;
 };
 
-struct work_data
-{
-	uint32_t nonce;
-	unsigned short thr_id;
-};
-
-struct work_item
-{
-	uint32_t work_id;
-	struct work_data *work_data;
-	struct work_item *next;
-	struct work_item *prev;
-};
-
 struct work_items
 {
-	struct work_item *head;
-	int size;
-	uint32_t id;
+	struct list_head list;
+	int thr_id;
+	uint32_t nonce;
+	uint16_t work_id;
+	uint16_t id;
 };
 
 static uint32_t g_prev_target[8];
@@ -267,73 +256,39 @@ static pthread_mutex_t work_items_lock;
 static struct work_items* init_work_items()
 {
 	struct work_items *items = calloc(1, sizeof(struct work_items));
-	items->size = 0;
 	items->id = 0xf00;
+	INIT_LIST_HEAD(&items->list);
 	return items;
 }
 
-static struct work_data* pop_work_item(struct work_items *items, uint32_t work_id)
+static struct work_items* pop_work_item(struct work_items *items, uint32_t work_id)
 {
-	int i;
-	struct work_item *item;
-	struct work_item *prev;
-	struct work_data *work_data = NULL;
-	for(i = 0, item = items->head; i < items->size - 1; i++)
+	struct work_items *item, *tmp, *ret = NULL;
+	list_for_each_entry_safe(item, tmp, &items->list, list)
 	{
-		if(item->work_id == work_id) break;
-		item = item->next;
-	}
-	if(item != NULL && item->work_id == work_id)
-	{
-		work_data = item->work_data;
-		if(item == items->head)
+		if(item->work_id == work_id)
 		{
-			if(items->size <= 1)
-				items->head = NULL;
-			else
-			{
-				items->head = item->next;
-				item->next->prev = NULL;
-			}
+			list_del(&item->list);
+			ret = item;
+			break;
 		}
-		else
-		{
-			prev = item->prev;
-			prev->next = item->next;
-		}
-		free(item);
-		items->size--;
 	}
-	return work_data;
+	return ret;
 }
 
-static uint32_t push_work_item(struct work_items *items, struct work *work)
+static uint16_t push_work_item(struct work_items *items, struct work *work)
 {
-	int i;
-	struct work_item *item;
-	struct work_item *new;
-	struct work_data *work_data;
-	work_data = pop_work_item(items, items->id);
-	if(work_data != NULL)
-		free(work_data);
-	new = calloc(1, sizeof(struct work_item));
-	work_data = calloc(1, sizeof(struct work_data));
-	work_data->nonce = work->data[19];
-	work_data->thr_id = work->thr_id;
-	new->work_data = work_data;
-	new->work_id = items->id;
-	if(items->head == NULL)
-		items->head = new;
-	else
-	{
-		for(i = 0, item = items->head; i < items->size - 1; i++)
-			item = item->next;
-		item->next = new;
-		item->next->prev = item;
-	}
-	items->size++;
+	struct work_items *item, *prev;
+	item = calloc(1, sizeof(struct work_items));
+	item->nonce = work->data[19];
+	item->thr_id = work->thr_id;
+	item->work_id = items->id;
+	prev = pop_work_item(items, item->work_id);
+	if(prev != NULL)
+		free(prev);
+	list_add(&item->list, &items->list);
 	items->id = (++items->id & 0xfff) | 0xf00;
-	return new->work_id;
+	return item->work_id;
 }
 
 static bool submit_work(struct thr_info *thr, const struct work *work_in);
@@ -687,21 +642,21 @@ err_out:
 	return false;
 }
 
-static void share_result(int result, const char *reason, uint32_t work_id)
+static void share_result(int result, const char *reason, uint16_t work_id)
 {
 	int chip_id, thr_id;
 	struct timeval timestr;
-	struct work_data *work_data;
+	struct work_items *work_item;
 	pthread_mutex_lock(&work_items_lock);
-	work_data = pop_work_item(work_items, work_id);
+	work_item = pop_work_item(work_items, work_id);
 	pthread_mutex_unlock(&work_items_lock);
-	if(work_data == NULL)
+	if(work_item == NULL)
 	{
 		applog(LOG_ERR, "Invalid work_id: %x", work_id);
 		return;
 	}
-	thr_id = work_data->thr_id;
-	chip_id = work_data->nonce / (0xffffffff / gc3355_devs[thr_id].chips);
+	thr_id = work_item->thr_id;
+	chip_id = work_item->nonce / (0xffffffff / gc3355_devs[thr_id].chips);
 	pthread_mutex_lock(&stats_lock);
 	if(result)
 	{
@@ -719,12 +674,12 @@ static void share_result(int result, const char *reason, uint32_t work_id)
 	pthread_mutex_unlock(&stats_lock);
 	applog(LOG_INFO, "%s %08x GSD %d@%d",
 	   result ? "Accepted" : "Rejected",
-	   work_data->nonce,
+	   work_item->nonce,
 	   thr_id, chip_id
 	);
 	if (reason)
 		applog(LOG_INFO, "DEBUG: reject reason: %s", reason);
-	free(work_data);
+	free(work_item);
 }
 
 static void restart_threads(void)
@@ -739,7 +694,7 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 	json_t *val, *res, *reason;
 	char s[345];
 	int i;
-	uint32_t id;
+	uint16_t id;
 	bool rc = false;
 
 	if (have_stratum) {
@@ -766,6 +721,11 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 		if (unlikely(!stratum_send_line(&stratum, s))) {
 			applog(LOG_ERR, "submit_upstream_work stratum_send_line failed");
 			can_work = 0x0;
+			struct work_items *work_item = pop_work_item(work_items, id);
+			if(work_item != NULL)
+				free(work_item);
+			else
+				applog(LOG_ERR, "Invalid work_id: %x", id);
 			goto out;
 		}
 		can_work = 0x1;
