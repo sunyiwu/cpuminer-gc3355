@@ -19,10 +19,12 @@ GC3355-specific options:
 
 ```
 --gc3355=DEV0,DEV1,...,DEVn      				enable GC3355 chip mining mode (default: no)
+--gc3355-detect					      			automatically detect GC3355 miners (not for Windows) (default: no)
 --freq=FREQUENCY  								set GC3355 core frequency in NONE dual mode (default: 600)
 --gc3355-freq=DEV0:F0,DEV1:F1,...,DEVn:Fn		individual frequency setting
 --gc3355-freq=DEV0:F0:CHIP0,...,DEVn:Fn:CHIPn	individual per chip frequency setting
 --gc3355-autotune  								auto overclocking each GC3355 chip (default: no)
+--gc3355-timeout=N  							max. time in seconds after no share is submitted before restarting GC3355 (default: never)
 ```
 
 If you cannot find any /dev/ttyUSB or /dev/ttyACM, it related to running cgminer, this can easily be fixed by rebooting the system.
@@ -30,7 +32,7 @@ You do not need the set the # of chips for USB Miner or G-Blade, it is detected 
 Example with per chip tuned frequency setting, USB miner (ttyACM0) and G-Blade (ttyACM1, ttyACM2):
 
 ```
-./minerd --gc3355=/dev/ttyACM0,/dev/ttyACM1,/dev/ttyACM2 --freq=850 --gc3355-freq=/dev/ttyACM0:900,/dev/ttyACM0:875:1,/dev/ttyACM0:875:2,/dev/ttyACM1:825,/dev/ttyACM1:1025:32,/dev/ttyACM2:825,/dev/ttyACM2:850:10
+./minerd --gc3355-detect --freq=850 --gc3355-freq=/dev/ttyACM0:900,/dev/ttyACM0:875:1,/dev/ttyACM0:875:2,/dev/ttyACM1:825,/dev/ttyACM1:1025:32,/dev/ttyACM2:825,/dev/ttyACM2:850:10
 ```
 
 The syntax is:
@@ -45,9 +47,9 @@ Example script with backup pools for *nix:
 
 ```
 while true ; do
-./minerd --gc3355=/dev/ttyACM0,/dev/ttyACM1,/dev/ttyACM2 --gc3355-freq=/dev/ttyACM0:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool1:port --userpass=user:pass --retries=1
-./minerd --gc3355=/dev/ttyACM0,/dev/ttyACM1,/dev/ttyACM2 --gc3355-freq=/dev/ttyACM0:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool2:port --userpass=user:pass --retries=1
-./minerd --gc3355=/dev/ttyACM0,/dev/ttyACM1,/dev/ttyACM2 --gc3355-freq=/dev/ttyACM0:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool2:port --userpass=user:pass --retries=1
+./minerd --gc3355-detect --gc3355-freq=/dev/ttyACM0:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool1:port --userpass=user:pass --retries=1
+./minerd --gc3355-detect --gc3355-freq=/dev/ttyACM0:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool2:port --userpass=user:pass --retries=1
+./minerd --gc3355-detect --gc3355-freq=/dev/ttyACM0:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool2:port --userpass=user:pass --retries=1
 done
 ```
 
@@ -65,11 +67,17 @@ pause
 API
 ==============
 The API is accessible on port 4028 (by default), to change the port pass --api-port=PORT
-One command is currently supported:
+One GET command is currently supported:
 ```
 {"get":"stats"}\n
 ```
 This will output a JSON encoded array with mining stats for each GC3355 chip.
+One SET command is currently supported:
+```
+{"set":"frequency", "devices":{"ttyACM0":{"chips":[825,850,875,900,850]}}}\n
+```
+This will set the frequency on the fly of the GC3355 chips to 825MHz (chip0), 850MHz (chip1), 875MHz (chip2), 900MHz (chip3), 850MHz (chip4)
+You can specify multiple devices, but the length of the chips array must be equal to the number of chips on the GC3355 miners, Blades have 40 chips but you can only address chip0-7 (clusters of 5 chips), so the max is 8.
 To translate the JSON keys, please refer to cpu-miner.c:66
 Do not forget the newline (\n), it is used to tell the API to stop reading and execute the command!
 Windows is not supported.
