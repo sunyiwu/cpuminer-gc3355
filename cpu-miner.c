@@ -87,6 +87,7 @@ static const char *algo_names[] = {
 struct gc3355_dev {
 	int	id;
 	int	dev_fd;
+	char *serial;
 	unsigned char type;
 	unsigned char chips;
 	bool resend;
@@ -450,7 +451,7 @@ static void start_tui()
 	wl = init_window_lines(opt_n_threads, 4);
 	for(i = 0; i < opt_n_threads; i++)
 	{
-		window_lines_addstr(wl, i, "GSD %d", i);
+		window_lines_addstr(wl, i, "GSD %d:", i);
 		window_lines_addstr(wl, i, " | 0 MHz");
 		window_lines_addstr(wl, i, " | 0/0 KH/s");
 		window_lines_addstr(wl, i, " | A: 0 R: 0 HW: 0");
@@ -512,13 +513,13 @@ static void *tui_main_thread(void *userdata)
 	int i, j;
 	struct timeval timestr;
 	double hashrate, pool_hashrate, thread_hashrate, thread_pool_hashrate, pool_hashrate_width, hashrate_width;
-	unsigned int accepted, rejected, hwe, thread_accepted, thread_rejected, thread_hwe, thread_freq, accepted_width, rejected_width, hwe_width;
+	unsigned int accepted, rejected, hwe, thread_accepted, thread_rejected, thread_hwe, thread_freq, accepted_width, rejected_width, hwe_width, id_width, serial_width;
 	struct window_lines *wl;
 	while(opt_curses)
 	{
 		pthread_mutex_lock(&stats_lock);
 		gettimeofday(&timestr, NULL);
-		accepted_width = rejected_width = hwe_width = pool_hashrate_width = hashrate_width = 0;
+		accepted_width = rejected_width = hwe_width = pool_hashrate_width = hashrate_width = serial_width = 0;
 		for(i = 0; i < opt_n_threads; i++)
 		{
 			thread_hashrate = thread_pool_hashrate = thread_accepted = thread_rejected = thread_hwe = 0;
@@ -538,6 +539,12 @@ static void *tui_main_thread(void *userdata)
 				if(thread_hwe > hwe_width) hwe_width = thread_hwe;
 				if(thread_hashrate > hashrate_width) hashrate_width = thread_hashrate;
 				if(thread_pool_hashrate > pool_hashrate_width) pool_hashrate_width = thread_pool_hashrate;
+				if(gc3355_devs[i].serial != NULL)
+				{
+					int tmp = snprintf(NULL, 0, "%s", gc3355_devs[i].serial);
+					if(tmp > serial_width)
+						serial_width = tmp;
+				}
 			}
 		}
 		accepted_width = snprintf(NULL, 0, "%d", accepted_width);
@@ -545,8 +552,9 @@ static void *tui_main_thread(void *userdata)
 		hwe_width = snprintf(NULL, 0, "%d", hwe_width);
 		hashrate_width = snprintf(NULL, 0, "%.1lf", hashrate_width / 1000);
 		pool_hashrate_width = snprintf(NULL, 0, "%.1lf", pool_hashrate_width / 1000);
+		id_width = snprintf(NULL, 0, "%d", opt_n_threads);
 		hashrate = pool_hashrate = accepted = rejected = hwe = 0;
-		wl = init_window_lines(opt_n_threads, 6);
+		wl = init_window_lines(opt_n_threads, 7);
 		for(i = 0; i < opt_n_threads; i++)
 		{
 			thread_hashrate = thread_pool_hashrate = thread_accepted = thread_rejected = thread_hwe = thread_freq = 0;
@@ -569,7 +577,11 @@ static void *tui_main_thread(void *userdata)
 				rejected += thread_rejected;
 				hwe += thread_hwe;
 			}
-			window_lines_addstr(wl, i, "GSD %d", i);
+			window_lines_addstr(wl, i, "GSD %*d:", id_width, i);
+			if(gc3355_devs[i].serial != NULL)
+				window_lines_addstr(wl, i, " %*s", serial_width, gc3355_devs[i].serial);
+			else
+				window_lines_addstr(wl, i, "");
 			window_lines_addstr(wl, i, " | %d MHz", thread_freq);
 			window_lines_addstr(wl, i, " | %*.1lf/%*.1lf KH/s", (int) pool_hashrate_width, thread_pool_hashrate / 1000, (int) hashrate_width, thread_hashrate / 1000);
 			window_lines_addstr(wl, i, " | A: %*d", accepted_width, thread_accepted);

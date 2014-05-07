@@ -980,6 +980,7 @@ static int create_gc3355_miner_threads(struct thr_info *thr_info, int opt_n_thre
 #ifdef HAVE_UDEV
 			struct gc3355_devices *device = gc3355_get_next_device(device_list);
 			gc3355_devs[i].devname = strdup(device->path);
+			gc3355_devs[i].serial = strdup(device->serial);
 			gc3355_free_device(device);
 #endif
 		}
