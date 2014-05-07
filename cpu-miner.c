@@ -73,6 +73,7 @@ static const char *algo_names[] = {
 #define API_GET_STATS "stats"
 #define API_SET_FREQUENCY "frequency"
 #define API_MINER_START_TIME "start_time"
+#define API_DEVICE_SERIAL "serial"
 #define API_DEVICES "devices"
 #define API_CHIPS "chips"
 #define API_LAST_SHARE "last_share"
@@ -1144,6 +1145,8 @@ static bool api_parse_get(const char *api_get, json_t *obj, json_t *err)
 				json_array_append_new(chips, chip);
 			}
 			json_object_set_new(dev, API_CHIPS, chips);
+			if(gc3355_devs[i].serial != NULL)
+				json_object_set_new(dev, API_DEVICE_SERIAL, json_string(gc3355_devs[i].serial));
 			char *path = gc3355_devs[i].devname;
 			char *base = strrchr(path, '/');
 			json_object_set_new(devs, base ? base + 1 : path, dev);
