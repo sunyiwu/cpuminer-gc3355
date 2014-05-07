@@ -1040,15 +1040,16 @@ static void *stratum_thread(void *userdata)
 		    (strcmp(stratum.job.job_id, g_curr_job_id) || !g_work_time)) {
 			pthread_mutex_lock(&g_work_lock);
 			pthread_mutex_lock(&stratum.work_lock);
-			applog(LOG_INFO, "New job_id: %s Diff: %d", stratum.job.job_id, (int) (stratum.job.diff));
 			g_prev_work_id = g_curr_work_id;
 			if (stratum.job.clean)
 			{
+				restart_threads();
 				applog(LOG_INFO, "Stratum detected new block");
 				gettimeofday(&timestr, NULL);
 				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
-				restart_threads();
+				restarted = 1;
 			}
+			applog(LOG_INFO, "New job_id: %s Diff: %d", stratum.job.job_id, (int) (stratum.job.diff));
 			strcpy(g_prev_job_id, g_curr_job_id);
 			for(i = 0; i < 8; i++) g_prev_target[i] = g_curr_target[i];
 			for(i = 0; i < opt_n_threads; i++)
@@ -1064,7 +1065,6 @@ static void *stratum_thread(void *userdata)
 				stratum_gen_work(&stratum, &g_works[i]);
 			}
 			time(&g_work_time);
-			restarted = 1;
 			pthread_mutex_unlock(&stratum.work_lock);
 			pthread_mutex_unlock(&g_work_lock);
 		}
@@ -1085,10 +1085,10 @@ static void *stratum_thread(void *userdata)
 		{
 			if(stratum.job.diff != stratum.next_diff && stratum.next_diff > 0)
 			{
-				applog(LOG_INFO, "Stratum difficulty changed");
 				pthread_mutex_lock(&g_work_lock);
 				pthread_mutex_lock(&stratum.work_lock);
 				restart_threads();
+				applog(LOG_INFO, "Stratum difficulty changed");
 				for(i = 0; i < 8; i++) g_prev_target[i] = g_curr_target[i];
 				g_prev_work_id = g_curr_work_id;
 				for(i = 0; i < opt_n_threads; i++)
