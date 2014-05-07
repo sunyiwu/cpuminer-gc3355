@@ -120,6 +120,17 @@ else
 	])
 fi
 
+AC_CHECK_HEADER([libudev.h],[
+	libudev=yes
+	UDEV_LIBS=-ludev
+	AC_DEFINE([HAVE_LIBUDEV], [1], [Defined to 1 if libudev is wanted])
+], [
+	if test "x$libudev" = "xyes"; then
+		AC_MSG_ERROR([libudev not found])
+	fi
+	libudev=no
+])
+
 AM_CONDITIONAL([WANT_JANSSON], [test x$request_jansson = xtrue])
 AM_CONDITIONAL([HAVE_CURSES], [test x$curses = xyes])
 AM_CONDITIONAL([HAVE_WINDOWS], [test x$have_win32 = xtrue])
@@ -143,6 +154,7 @@ AC_SUBST(PTHREAD_LIBS)
 AC_SUBST(WS2_LIBS)
 AC_SUBST(NCURSES_LIBS)
 AC_SUBST(PDCURSES_LIBS)
+AC_SUBST(UDEV_LIBS)
 
 AC_CONFIG_FILES([
 	Makefile

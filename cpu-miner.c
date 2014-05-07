@@ -43,7 +43,7 @@
 #define PROGRAM_NAME		"minerd"
 #define DEF_RPC_URL		"http://127.0.0.1:9332/"
 
-#define MINER_VERSION	"v0.9e"
+#define MINER_VERSION	"v0.9f"
 
 enum workio_commands {
 	WC_SUBMIT_WORK,
@@ -115,7 +115,9 @@ static char *opt_gc3355_frequency = NULL;
 static bool opt_gc3355_autotune = false;
 static unsigned short opt_gc3355_chips = GC3355_DEFAULT_CHIPS;
 static unsigned int opt_gc3355_timeout = 0;
+static bool opt_gc3355_detect = false;
 static struct gc3355_dev *gc3355_devs;
+static struct gc3355_devices *device_list;
 static unsigned int gc3355_time_start;
 
 bool opt_log = false;
@@ -168,6 +170,7 @@ static char const usage[] = "\
 Usage: " PROGRAM_NAME " [OPTIONS]\n\
 Options:\n\
   -G, --gc3355=DEV0,DEV1,...,DEVn      					enable GC3355 chip mining mode (default: no)\n\
+  -d  --gc3355-detect					      			automatically detect GC3355 miners (default: no)\n\
   -F, --freq=FREQUENCY  								set GC3355 core frequency in NONE dual mode (default: 600)\n\
   -f, --gc3355-freq=DEV0:F0,DEV1:F1,...,DEVn:Fn			individual frequency setting\n\
 	  --gc3355-freq=DEV0:F0:CHIP0,...,DEVn:Fn:CHIPn		individual per chip frequency setting\n\
@@ -197,6 +200,7 @@ static char const short_options[] =
 
 static struct option const options[] = {
 	{ "gc3355", 1, NULL, 'G' },
+	{ "gc3355-detect", 0, NULL, 'd' },
 	{ "freq", 1, NULL, 'F' },
 	{ "gc3355-freq", 1, NULL, 'f' },
 	{ "gc3355-autotune", 0, NULL, 'A' },
@@ -1358,6 +1362,11 @@ static void parse_arg (int key, char *arg)
 	int v, i;
 
 	switch(key) {
+	case 'd':
+#ifdef HAVE_UDEV
+		opt_gc3355_detect = true;
+#endif
+		break;
 	case 'G':
 		gc3355_devname = strdup(arg);
 		break;
@@ -1591,9 +1600,17 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 	
-	opt_n_threads = 1;
+	opt_n_threads = 0;
 
-	if (gc3355_devname != NULL) {
+	if(opt_gc3355_detect)
+	{
+#ifdef HAVE_UDEV
+		device_list = gc3355_get_device_list();
+		opt_n_threads = gc3355_get_device_count(device_list);
+#endif
+	}
+	else if (gc3355_devname != NULL)
+	{
 		char *p = gc3355_devname;
 		int nn=0;
 		do {
@@ -1601,6 +1618,12 @@ int main(int argc, char *argv[])
 			nn++;
 		} while(p!=NULL);
 		opt_n_threads = nn;
+	}
+	
+	if(!opt_n_threads)
+	{
+		applog(LOG_ERR, "No GC3355 devices specified, please use --gc3355-detect for auto-detection, or manually specify with --gc3355=DEV0,DEV1,...,DEVn");
+		exit(1);
 	}
 	
 	if(opt_curses)
@@ -1665,22 +1688,21 @@ int main(int argc, char *argv[])
 			tq_push(thr_info[stratum_thr_id].q, strdup(rpc_url));
 	}
 	/* start mining threads */
-	if (gc3355_devname != NULL) {
-		if (create_gc3355_miner_threads(thr_info, opt_n_threads) != 0)
-			return 1;
-	
+
+	if (create_gc3355_miner_threads(thr_info, opt_n_threads) != 0)
+		return 1;
+
 #ifndef WIN32
-		/* init api thread info */
-		api_thr_id = opt_n_threads + 3;
-		thr = &thr_info[api_thr_id];
-		thr->id = api_thr_id;
-		/* start api thread */
-		if (unlikely(pthread_create(&thr->pth, NULL, api_thread, thr))) {
-			applog(LOG_ERR, "api thread create failed");
-			return 1;
-		}
-#endif
+	/* init api thread info */
+	api_thr_id = opt_n_threads + 3;
+	thr = &thr_info[api_thr_id];
+	thr->id = api_thr_id;
+	/* start api thread */
+	if (unlikely(pthread_create(&thr->pth, NULL, api_thread, thr))) {
+		applog(LOG_ERR, "api thread create failed");
+		return 1;
 	}
+#endif
 
 	if(opt_curses)
 	{

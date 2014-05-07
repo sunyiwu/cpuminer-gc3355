@@ -10,6 +10,7 @@
  */
  
 #ifndef WIN32
+#define HAVE_UDEV
 #include <termios.h>
 #include <time.h>
 #include <sys/types.h>
@@ -19,6 +20,8 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <libudev.h>
+#include "elist.h"
 #else
 #define htobe16 htons
 #define htole16(x) (x)
@@ -72,7 +75,18 @@ typedef unsigned int speed_t;
 #include <gc3355-commands.h>
 #include <string.h>
 
-static char can_start = 0x0;
+#define GC3355_OVERCLOCK_MAX_HWE 3
+#define GC3355_OVERCLOCK_ADJUST_MIN 10
+#define GC3355_OVERCLOCK_ADJUST_STEPS 3845
+#define GC3355_OVERCLOCK_FREQ_STEP 25
+#define GC3355_MIN_FREQ 600
+#define GC3355_MAX_FREQ 1400
+#define GC3355_HASH_SPEED 84.705882
+#define GC3355_TRESHOLD 0.98
+#define GC3355_MAX_CHIPS 8
+#define GC3355_USB_STR "GC3355 5-chip USB-Mini Miner"
+#define GC3355_BLADE_STR "GC3355 40-chip G-Blade Miner"
+#define GC3355_NONE_STR "Unknown GC3355 Miner"
 
 struct chip_freq
 {
@@ -88,20 +102,87 @@ struct dev_freq
 	struct chip_freq *chips;
 };
 
+struct gc3355_devices
+{
+	struct list_head list;
+	char *path;
+	char *serial;
+};
+
+static char can_start = 0x0;
 static struct dev_freq *dev_freq_root;
 
-#define GC3355_OVERCLOCK_MAX_HWE 3
-#define GC3355_OVERCLOCK_ADJUST_MIN 10
-#define GC3355_OVERCLOCK_ADJUST_STEPS 3845
-#define GC3355_OVERCLOCK_FREQ_STEP 25
-#define GC3355_MIN_FREQ 600
-#define GC3355_MAX_FREQ 1400
-#define GC3355_HASH_SPEED 84.705882
-#define GC3355_TRESHOLD 0.98
-#define GC3355_MAX_CHIPS 8
-#define GC3355_USB_STR "GC3355 5-chip USB-Mini Miner"
-#define GC3355_BLADE_STR "GC3355 40-chip G-Blade Miner"
-#define GC3355_NONE_STR "Unknown GC3355 Miner"
+#ifndef WIN32
+static struct gc3355_devices *gc3355_get_device_list()
+{
+	struct gc3355_devices *device_list, *device;
+	struct udev *udev;
+	struct udev_enumerate *enumerate;
+	struct udev_list_entry *devices, *dev_list_entry;
+	struct udev_device *dev, *usb_dev;
+	device_list = calloc(1, sizeof(struct gc3355_devices));
+	INIT_LIST_HEAD(&device_list->list);
+	udev = udev_new();
+	if(!udev) return device_list;
+	enumerate = udev_enumerate_new(udev);
+	udev_enumerate_add_match_subsystem(enumerate, "tty");
+	udev_enumerate_scan_devices(enumerate);
+	devices = udev_enumerate_get_list_entry(enumerate);
+	udev_list_entry_foreach(dev_list_entry, devices)
+	{
+		const char *path;
+		const char *devnode_path;
+		const char *serial;
+		const char *id_vendor;
+		const char *id_product;
+		path = udev_list_entry_get_name(dev_list_entry);
+		dev = udev_device_new_from_syspath(udev, path);
+		usb_dev = udev_device_get_parent_with_subsystem_devtype(dev, "usb", "usb_device");
+		if (!usb_dev) continue;
+		id_vendor = udev_device_get_sysattr_value(usb_dev,"idVendor");
+		id_product = udev_device_get_sysattr_value(usb_dev, "idProduct");
+		if((strcmp(id_vendor, "10c4") || strcmp(id_product, "ea60")) && (strcmp(id_vendor, "0483") || strcmp(id_product, "5740"))) continue;
+		devnode_path = udev_device_get_devnode(dev);
+		serial = udev_device_get_sysattr_value(usb_dev, "serial");
+		device = calloc(1, sizeof(struct gc3355_devices));
+		device->path = strdup(devnode_path);
+		device->serial = strdup(serial);
+		list_add(&device->list, &device_list->list);
+		udev_device_unref(dev); 
+	}
+	udev_enumerate_unref(enumerate);
+	udev_unref(udev);
+	return device_list;
+}
+
+static int gc3355_get_device_count(struct gc3355_devices *device_list)
+{
+	struct gc3355_devices *device;
+	int count = 0;
+	list_for_each_entry(device, &device_list->list, list)
+		count++;
+	return count;
+}
+
+static struct gc3355_devices *gc3355_get_next_device(struct gc3355_devices *device_list)
+{
+	struct gc3355_devices *device, *tmp, *ret = NULL;
+	list_for_each_entry_safe(device, tmp, &device_list->list, list)
+	{
+		list_del(&device->list);
+		ret = device;
+		break;
+	}
+	return ret;
+}
+
+static void gc3355_free_device(struct gc3355_devices *device)
+{
+	free(device->path);
+	free(device->serial);
+	free(device);
+}
+#endif
 
 /* external functions */
 extern void scrypt_1024_1_1_256(const uint32_t *input, uint32_t *output,
@@ -887,17 +968,29 @@ static int create_gc3355_miner_threads(struct thr_info *thr_info, int opt_n_thre
 			i++;
 		}
 	}
+	
 	pd = gc3355_devname;
 	for (i = 0; i < opt_n_threads; i++)
 	{
 		thr = &thr_info[i];
 		thr->id = i;
 		
-		p = strchr(pd, ',');
-		if(p != NULL)
-			*p = '\0';
-		gc3355_devs[i].devname = strdup(pd);
-		pd = p + 1;
+		if(opt_gc3355_detect)
+		{
+#ifdef HAVE_UDEV
+			struct gc3355_devices *device = gc3355_get_next_device(device_list);
+			gc3355_devs[i].devname = strdup(device->path);
+			gc3355_free_device(device);
+#endif
+		}
+		else
+		{
+			p = strchr(pd, ',');
+			if(p != NULL)
+				*p = '\0';
+			gc3355_devs[i].devname = strdup(pd);
+			pd = p + 1;
+		}
 
 		pthread_attr_t attrs;
 		pthread_attr_init(&attrs);
@@ -913,6 +1006,7 @@ static int create_gc3355_miner_threads(struct thr_info *thr_info, int opt_n_thre
 		}
 		usleep(100000);
 	}
-	free(gc3355_devname);
+	if(gc3355_devname != NULL)
+		free(gc3355_devname);
 	return 0;
 }
