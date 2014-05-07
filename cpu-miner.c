@@ -112,7 +112,7 @@ struct gc3355_dev {
 static char *gc3355_devname = NULL;
 static unsigned short opt_frequency = 600;
 static char *opt_gc3355_frequency = NULL;
-static char opt_gc3355_autotune = 0x0;
+static bool opt_gc3355_autotune = false;
 static unsigned short opt_gc3355_chips = GC3355_DEFAULT_CHIPS;
 static unsigned int opt_gc3355_timeout = 0;
 static struct gc3355_dev *gc3355_devs;
@@ -1368,7 +1368,7 @@ static void parse_arg (int key, char *arg)
 		opt_gc3355_frequency = strdup(arg);
 		break;
 	case 'A':
-		opt_gc3355_autotune = 0x1;
+		opt_gc3355_autotune = true;
 		break;
 	case 'c':
 		opt_gc3355_chips = atoi(arg);
