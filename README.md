@@ -15,6 +15,12 @@ cd cpuminer-gc3355
 make
 ```
 
+Failover pool strategy is supported.
+`--url=stratum+tcp://pool1:port --userpass=user1:pass1 --url=stratum+tcp://pool2:port --userpass=user2:pass2 --url=stratum+tcp://pool3:port --userpass=user3:pass3`
+Pool 1 is the main pool, if it is down, it will try to connect to the backup pool(s) and query the main pool until it is back up and switch pools automatically.
+
+Special option: `--no-refresh` - only send new work to the GC3355 when a new block is detected (default: always send new work GC3355)
+
 GC3355-specific options:
 
 ```
@@ -46,21 +52,13 @@ G-Blade -> chip_count = 40
 Example script with backup pools for *nix:
 
 ```
-while true ; do
-./minerd --gc3355-detect --gc3355-freq=/dev/ttyACM0:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool1:port --userpass=user:pass --retries=1
-./minerd --gc3355-detect --gc3355-freq=/dev/ttyACM0:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool2:port --userpass=user:pass --retries=1
-./minerd --gc3355-detect --gc3355-freq=/dev/ttyACM0:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool2:port --userpass=user:pass --retries=1
-done
+./minerd --gc3355-detect --gc3355-freq=/dev/ttyACM0:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool1:port --userpass=user1:pass1 --url=stratum+tcp://pool2:port --userpass=user2:pass2
 ```
 
 Example script with backup pools for Windows:
 
 ```
-:loop
-minerd.exe --gc3355=\\.\COM1,\\.\COM2,\\.\COM3 --gc3355-freq=\\.\COM1:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool1:port --userpass=user:pass --retries=1
-minerd.exe --gc3355=\\.\COM1,\\.\COM2,\\.\COM3 --gc3355-freq=\\.\COM1:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool2:port --userpass=user:pass --retries=1
-minerd.exe --gc3355=\\.\COM1,\\.\COM2,\\.\COM3 --gc3355-freq=\\.\COM1:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool3:port --userpass=user:pass --retries=1
-goto loop
+minerd.exe --gc3355=\\.\COM1,\\.\COM2,\\.\COM3 --gc3355-freq=\\.\COM1:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool1:port --userpass=user1:pass1 --url=stratum+tcp://pool2:port --userpass=user2:pass2
 pause
 ```
 
