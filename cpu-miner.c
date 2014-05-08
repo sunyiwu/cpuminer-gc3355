@@ -43,7 +43,7 @@
 #define PROGRAM_NAME		"minerd"
 #define DEF_RPC_URL		"http://127.0.0.1:9332/"
 
-#define MINER_VERSION	"v0.9f"
+#define MINER_VERSION	"v0.9g"
 
 enum workio_commands {
 	WC_SUBMIT_WORK,
@@ -122,6 +122,7 @@ static struct gc3355_dev *gc3355_devs;
 static struct gc3355_devices *device_list;
 static unsigned int gc3355_time_start;
 
+bool opt_refresh = true;
 bool opt_log = false;
 bool opt_curses = true;
 bool opt_debug = false;
@@ -181,6 +182,7 @@ Options:\n\
   -A, --gc3355-autotune  								auto overclocking each GC3355 chip (default: no)\n\
   -c, --gc3355-chips=N  								# of GC3355 chips (default: 5)\n\
   -x, --gc3355-timeout=N  								max. time after no share is submitted before restarting GC3355 chips (default: never)\n\
+  -w, --no-refresh   									only send new work when a new block is detected\n\
   -a, --api-port=PORT  									set the JSON API port (default: 4028)\n\
   -t, --text											disable curses tui, output text\n\
   -L, --log												file logging\n\
@@ -210,6 +212,7 @@ static struct option const options[] = {
 	{ "gc3355-autotune", 0, NULL, 'A' },
 	{ "gc3355-chips", 1, NULL, 'c' },
 	{ "gc3355-timeout", 1, NULL, 'x' },
+	{ "no-refresh", 0, NULL, 'w' },
 	{ "api-port", 1, NULL, 'a' },
 	{ "text", 0, NULL, 't' },
 	{ "log", 0, NULL, 'L' },
@@ -1314,10 +1317,11 @@ login:
 			pthread_mutex_lock(&g_work_lock);
 			pthread_mutex_lock(&stratum->work_lock);
 			g_prev_work_id = g_curr_work_id;
-			if (stratum->job.clean)
+			if (stratum->job.clean || opt_refresh)
 			{
 				restart_threads();
-				applog(LOG_INFO, "Stratum detected new block");
+				if(stratum->job.clean)
+					applog(LOG_INFO, "Stratum detected new block");
 				gettimeofday(&timestr, NULL);
 				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
 				restarted = 1;
@@ -1725,6 +1729,9 @@ static void parse_arg (int key, char *arg)
 		break;
 	case 'a':
 		opt_api_port = atoi(arg);
+		break;
+	case 'w':
+		opt_refresh = false;
 		break;
 	case 't':
 		opt_curses = false;
