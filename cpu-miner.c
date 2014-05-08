@@ -259,6 +259,7 @@ static bool can_work = false;
 
 static struct work *g_works;
 static time_t g_work_time;
+static time_t g_work_update_time;
 static pthread_mutex_t g_work_lock;
 
 static struct work_items *work_items;
@@ -1247,6 +1248,7 @@ static void *stratum_thread(void *userdata)
 	g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
 	pthread_mutex_lock(&g_work_lock);
 	g_work_time = 0;
+	g_work_update_time = 0;
 	pthread_mutex_unlock(&g_work_lock);
 	
 	while (1) {
@@ -1264,6 +1266,7 @@ login:
 			can_work = false;
 			clean_stratum(stratum);
 			g_work_time = 0;
+			g_work_update_time = 0;
 			pthread_mutex_unlock(&g_work_lock);
 		}
 		while (!stratum->curl)
@@ -1317,7 +1320,7 @@ login:
 			pthread_mutex_lock(&g_work_lock);
 			pthread_mutex_lock(&stratum->work_lock);
 			g_prev_work_id = g_curr_work_id;
-			if (stratum->job.clean || opt_refresh)
+			if (stratum->job.clean || opt_refresh || time(NULL) >= g_work_update_time + 60)
 			{
 				restart_threads();
 				if(stratum->job.clean)
@@ -1325,6 +1328,7 @@ login:
 				gettimeofday(&timestr, NULL);
 				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
 				restarted = 1;
+				time(&g_work_update_time);
 			}
 			applog(LOG_INFO, "New Job_id: %s Diff: %d Work_id: %08x", stratum->job.job_id, (int) (stratum->job.diff), g_curr_work_id);
 			strcpy(g_prev_job_id, g_curr_job_id);
@@ -1387,6 +1391,8 @@ login:
 				{
 					stratum_gen_work(stratum, &g_works[i]);
 				}
+				time(&g_work_update_time);
+				time(&g_work_time);
 				pthread_mutex_unlock(&stratum->work_lock);
 				pthread_mutex_unlock(&g_work_lock);
 			}
@@ -1964,6 +1970,14 @@ int main(int argc, char *argv[])
 	memset(&devs, 0, sizeof(devs));
 	gc3355_devs = devs;
 	
+	if(opt_curses)
+	{
+		pthread_mutex_lock(&tui_lock);
+		init_tui();
+		start_tui();
+		pthread_mutex_unlock(&tui_lock);
+	}
+	
 	work_items = init_work_items();
 
 	work_restart = calloc(opt_n_threads, sizeof(*work_restart));
@@ -1995,14 +2009,6 @@ int main(int argc, char *argv[])
 	if (unlikely(pthread_create(&thr->pth, NULL, check_pool_thread, thr))) {
 		applog(LOG_ERR, "check_pool thread create failed");
 		return 1;
-	}
-	
-	if(opt_curses)
-	{
-		pthread_mutex_lock(&tui_lock);
-		init_tui();
-		start_tui();
-		pthread_mutex_unlock(&tui_lock);
 	}
 	
 	if (want_stratum) {
