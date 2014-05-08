@@ -804,8 +804,8 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 				}
 				else if(gc3355->type == 1 && gc3355->adjust[chip_id] > 0)
 				{
-					gc3355->steps[chip_id] += stratum.job.diff;
-					if(gc3355->hwe[chip_id] >= GC3355_OVERCLOCK_MAX_HWE || (gc3355->hwe[chip_id] > 0 && (GC3355_OVERCLOCK_ADJUST_STEPS / 2) / stratum.job.diff >= 3 && gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS / 2 && gc3355->hashrate[chip_id] < GC3355_HASH_SPEED * freq * 0.8))
+					gc3355->steps[chip_id] += stratum->job.diff;
+					if(gc3355->hwe[chip_id] >= GC3355_OVERCLOCK_MAX_HWE || (gc3355->hwe[chip_id] > 0 && (GC3355_OVERCLOCK_ADJUST_STEPS / 2) / stratum->job.diff >= 3 && gc3355->steps[chip_id] >= GC3355_OVERCLOCK_ADJUST_STEPS / 2 && gc3355->hashrate[chip_id] < GC3355_HASH_SPEED * freq * 0.8))
 					{
 						freq = prev_freq(gc3355, chip_id);
 						gc3355->adjust[chip_id] = freq;
@@ -813,9 +813,9 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 					else
 					{
 						unsigned short steps = GC3355_OVERCLOCK_ADJUST_STEPS - gc3355->steps[chip_id];
-						if(GC3355_OVERCLOCK_ADJUST_MIN > gc3355->autotune_accepted[chip_id] && steps < stratum.job.diff * (GC3355_OVERCLOCK_ADJUST_MIN - gc3355->autotune_accepted[chip_id]))
+						if(GC3355_OVERCLOCK_ADJUST_MIN > gc3355->autotune_accepted[chip_id] && steps < stratum->job.diff * (GC3355_OVERCLOCK_ADJUST_MIN - gc3355->autotune_accepted[chip_id]))
 						{
-							steps = stratum.job.diff * (GC3355_OVERCLOCK_ADJUST_MIN - gc3355->autotune_accepted[chip_id]);
+							steps = stratum->job.diff * (GC3355_OVERCLOCK_ADJUST_MIN - gc3355->autotune_accepted[chip_id]);
 						}
 						if(gc3355->hashrate[chip_id] < GC3355_HASH_SPEED * freq * GC3355_TRESHOLD)
 						{

@@ -141,7 +141,7 @@ void applog(int prio, const char *fmt, ...)
 		fclose(fp);
 		pthread_mutex_unlock(&applog_lock);
 	}
-	if(!opt_curses)
+	if(!opt_curses || display == NULL)
 	{
 		pthread_mutex_lock(&applog_lock);
 		vfprintf(stderr, f, ap);

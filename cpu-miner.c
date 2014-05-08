@@ -129,14 +129,11 @@ bool opt_protocol = false;
 bool want_stratum = true;
 bool have_stratum = false;
 static bool opt_quiet = false;
-static int opt_retries = -1;
+static int opt_retries = 2;
 static int opt_fail_pause = 5;
 int opt_timeout = 270;
 int opt_scantime = 5;
 static int opt_n_threads;
-static char *rpc_url;
-static char *rpc_userpass;
-static char *rpc_user, *rpc_pass;
 struct thr_info *thr_info;
 static int work_thr_id;
 int longpoll_thr_id = -1;
@@ -144,10 +141,11 @@ int stratum_thr_id = -1;
 int api_thr_id = -1;
 int tui_main_thr_id = -1;
 int tui_user_thr_id = -1;
+int check_pool_thr_id = -1;
 unsigned short opt_api_port = API_DEFAULT_PORT;
 int api_sock;
 struct work_restart *work_restart = NULL;
-static struct stratum_ctx stratum;
+static struct stratum_ctx *stratum;
 
 struct display *display;
 struct log_buffer *log_buffer = NULL;
@@ -156,6 +154,10 @@ time_t time_start;
 pthread_mutex_t applog_lock;
 pthread_mutex_t stats_lock;
 pthread_mutex_t tui_lock;
+pthread_mutex_t pool_lock;
+pthread_mutex_t check_pool_lock;
+pthread_cond_t check_pool_cond;
+pthread_mutex_t switch_pool_lock;
 
 #ifdef HAVE_GETOPT_LONG
 #include <getopt.h>
@@ -250,7 +252,7 @@ static char g_prev_job_id[128];
 static char g_curr_job_id[128];
 static uint32_t g_prev_work_id = 0;
 static uint32_t g_curr_work_id = 0;
-static char can_work = 0x1;
+static bool can_work = false;
 
 static struct work *g_works;
 static time_t g_work_time;
@@ -258,6 +260,198 @@ static pthread_mutex_t g_work_lock;
 
 static struct work_items *work_items;
 static pthread_mutex_t work_items_lock;
+
+struct pool_details
+{
+	struct list_head list;
+	char *rpc_url;
+	char *rpc_userpass;
+	char *rpc_user, *rpc_pass;
+	uint16_t prio;
+	bool active;
+	bool tried;
+	bool usable;
+};
+
+static struct pool_details *gpool;
+static struct pool_details *pools;
+static bool must_switch = false;
+
+static struct pool_details* init_pool_details();
+static void add_pool(struct pool_details *pools, struct pool_details *pool);
+static void set_active_pool(struct pool_details *pools, struct pool_details *active_pool, bool active);
+static struct pool_details* get_active_pool(struct pool_details *pools);
+static struct pool_details* get_main_pool(struct pool_details *pools);
+static struct pool_details* get_next_pool(struct pool_details *pools);
+
+static struct pool_details* init_pool_details()
+{
+	struct pool_details *pools = calloc(1, sizeof(struct pool_details));
+	INIT_LIST_HEAD(&pools->list);
+	return pools;
+}
+
+static struct pool_details* new_pool(bool empty)
+{
+	struct pool_details *pool = calloc(1, sizeof(struct pool_details));
+	if(empty)
+	{
+		pool->rpc_url = DEF_RPC_URL;
+		pool->rpc_user = strdup("");
+		pool->rpc_pass = strdup("");
+	}
+	return pool;
+}
+
+static void add_pool_url(struct pool_details *pools, struct pool_details *pool, char *str)
+{
+	if(pool == NULL)
+		pool = new_pool(false);
+	if(pool != gpool)
+		gpool = pool;
+	if(pool->rpc_url != NULL)
+		free(pool->rpc_url);
+	pool->rpc_url = strdup(str);
+	if(pool->rpc_url && pool->rpc_user && pool->rpc_pass)
+		add_pool(pools, pool);
+}
+
+static void add_pool_user(struct pool_details *pools, struct pool_details *pool, char *str)
+{
+	if(pool == NULL)
+		pool = new_pool(false);
+	if(pool != gpool)
+		gpool = pool;
+	if(pool->rpc_user != NULL)
+		free(pool->rpc_user);
+	pool->rpc_user = strdup(str);
+	if(pool->rpc_url && pool->rpc_user && pool->rpc_pass)
+		add_pool(pools, pool);
+}
+
+static void add_pool_pass(struct pool_details *pools, struct pool_details *pool, char *str)
+{
+	if(pool == NULL)
+		pool = new_pool(false);
+	if(pool != gpool)
+		gpool = pool;
+	if(pool->rpc_pass != NULL)
+		free(pool->rpc_pass);
+	pool->rpc_pass = strdup(str);
+	if(pool->rpc_url && pool->rpc_user && pool->rpc_pass)
+		add_pool(pools, pool);
+}
+
+static bool check_pool_alive(struct pool_details *pool)
+{
+	bool alive = true;
+	struct stratum_ctx *stratum = calloc(1, sizeof(struct stratum_ctx));
+	pthread_mutex_init(&stratum->sock_lock, NULL);
+	pthread_mutex_init(&stratum->work_lock, NULL);
+	stratum->url = pool->rpc_url;
+	if (!stratum_connect(stratum, stratum->url) ||
+		!stratum_subscribe(stratum) ||
+		!stratum_authorize(stratum, pool->rpc_user, pool->rpc_pass))
+	{
+		alive = false;
+	}
+	stratum_disconnect(stratum);
+	free(stratum);
+	return alive;
+}
+
+static void add_pool(struct pool_details *pools, struct pool_details *pool)
+{
+	pool->rpc_userpass = malloc(strlen(pool->rpc_user) + strlen(pool->rpc_pass) + 2);
+	sprintf(pool->rpc_userpass, "%s:%s", pool->rpc_user, pool->rpc_pass);
+	pool->usable = true;
+	if(!list_empty(&pools->list))
+	{
+		pool->prio = ++(list_entry(&pools->list.prev, struct pool_details, list))->prio;
+	}
+	else
+	{
+		pool->active = true;
+		pool->tried = true;
+	}
+	//applog(LOG_INFO, "add pool %d url %s %x", pool->prio, pool->rpc_url, pool);
+	list_add_tail(&pool->list, &pools->list);
+	gpool = NULL;
+}
+
+static void set_active_pool(struct pool_details *pools, struct pool_details *active_pool, bool active)
+{
+	struct pool_details *pool;
+	list_for_each_entry(pool, &pools->list, list)
+	{
+		pool->active = false;
+	}
+	active_pool->active = active;
+	active_pool->tried = true;
+	//applog(LOG_INFO, "pool %d %x is %s", active_pool->prio, active_pool, active ? "active" : "inactive");
+}
+
+static struct pool_details* get_active_pool(struct pool_details *pools)
+{
+	struct pool_details *pool, *ret = NULL;
+	list_for_each_entry(pool, &pools->list, list)
+	{
+		if(pool->usable && pool->active)
+		{
+			ret = pool;
+			//applog(LOG_INFO, "got active pool %d %x", pool->prio, pool);
+			break;
+		}
+	}
+	return ret;
+}
+
+static struct pool_details* get_main_pool(struct pool_details *pools)
+{
+	struct pool_details *pool, *ret = NULL;
+	list_for_each_entry(pool, &pools->list, list)
+	{
+		if(pool->usable && pool->prio == 0)
+		{
+			ret = pool;
+			break;
+		}
+	}
+	return ret;
+}
+
+static void clear_pool_tried(struct pool_details *pools)
+{
+	struct pool_details *pool;
+	int tried = 0;
+	list_for_each_entry(pool, &pools->list, list)
+	{
+		if(pool->tried)
+			tried++;
+	}
+	if(tried == (list_entry(&pools->list.prev, struct pool_details, list))->prio + 1)
+	{
+		list_for_each_entry(pool, &pools->list, list)
+		{
+			pool->tried = false;
+		}
+	}
+}
+
+static struct pool_details* get_next_pool(struct pool_details *pools)
+{
+	struct pool_details *pool, *ret = NULL;
+	clear_pool_tried(pools);
+	list_for_each_entry(pool, &pools->list, list)
+	{
+		if(pool->usable && !pool->tried)
+		{
+			ret = pool;
+			break;
+		}
+	}
+	return ret;
+}
 
 static struct work_items* init_work_items()
 {
@@ -412,8 +606,12 @@ static void start_tui()
 {
 	int i, log_height, stats_height;
 	struct tm tm, *tm_p;
-	char *p;
+	char *p, *no_pool = "-";
 	struct window_lines *wl;
+	struct pool_details *pool;
+	pthread_mutex_lock(&pool_lock);
+	pool = get_active_pool(pools);
+	pthread_mutex_unlock(&pool_lock);
 	display = calloc(1, sizeof(struct display));
 	bool has_scroll = false;
 	tm_p = localtime(&time_start);
@@ -445,10 +643,17 @@ static void start_tui()
 		tm.tm_sec
 	);
 	mvwprintw(display->summary->win, 0, 1, "(5s) | 0/0 MH/s | A:0 R:0 HW:0");
-	p = strrchr(rpc_url, '/');
-	if(p == NULL) p = rpc_url;
-	else p++;
-	mvwprintw(display->summary->win, 1, 1,  "Connected to %s diff %d with stratum as user %s", p, (int) stratum.job.diff, rpc_user == NULL ? rpc_userpass : rpc_user);
+	if(pool != NULL)
+	{
+		p = strrchr(pool->rpc_url, '/');
+		if(p == NULL) p = pool->rpc_url;
+		else p++;
+	}
+	else
+	{
+		p = no_pool;
+	}
+	mvwprintw(display->summary->win, 1, 1,  "Connected to %s diff %d with stratum as user %s", p, (int) stratum->job.diff, pool != NULL ? (pool->rpc_user == NULL ? pool->rpc_userpass : pool->rpc_user) : no_pool);
 	wl = init_window_lines(opt_n_threads, 4);
 	for(i = 0; i < opt_n_threads; i++)
 	{
@@ -510,12 +715,13 @@ static void *tui_user_thread(void *userdata)
 static void *tui_main_thread(void *userdata)
 {
 	struct thr_info *mythr = userdata;
-	char *p;
+	char *p, *no_pool = "-";
 	int i, j;
 	struct timeval timestr;
 	double hashrate, pool_hashrate, thread_hashrate, thread_pool_hashrate, pool_hashrate_width, hashrate_width;
 	unsigned int accepted, rejected, hwe, thread_accepted, thread_rejected, thread_hwe, thread_freq, accepted_width, rejected_width, hwe_width, id_width, serial_width;
 	struct window_lines *wl;
+	struct pool_details *pool;
 	while(opt_curses)
 	{
 		pthread_mutex_lock(&stats_lock);
@@ -600,10 +806,20 @@ static void *tui_main_thread(void *userdata)
 		window_lines_addstr(wl, 0, "(%ds) | %.2lf/%.2lf MH/s | A: %d R: %d HW: %d", REFRESH_INTERVAL, pool_hashrate / 1000000, hashrate / 1000000, accepted, rejected, hwe);
 		window_lines_print(wl, display->summary->win);
 		window_lines_free(wl);
-		p = strrchr(rpc_url, '/');
-		if(p == NULL) p = rpc_url;
-		else p++;
-		mvwprintw(display->summary->win, 1, 1, "Connected to %s diff %d with stratum as user %s", p, (int) stratum.job.diff, rpc_user == NULL ? rpc_userpass : rpc_user);
+		pthread_mutex_lock(&pool_lock);
+		pool = get_active_pool(pools);
+		pthread_mutex_unlock(&pool_lock);
+		if(pool != NULL)
+		{
+			p = strrchr(pool->rpc_url, '/');
+			if(p == NULL) p = pool->rpc_url;
+			else p++;
+		}
+		else
+		{
+			p = no_pool;
+		}
+		mvwprintw(display->summary->win, 1, 1, "Connected to %s diff %d with stratum as user %s", p, (int) stratum->job.diff, pool != NULL ? (pool->rpc_user == NULL ? pool->rpc_userpass : pool->rpc_user) : no_pool);
 		mvwhline(display->summary->win, display->summary->height - 1, 0, '=', COLS);
 		wrefresh(display->summary->win);
 		prefresh(display->stats->win, display->stats->py, 0, display->stats->y, 0, display->stats->height + display->stats->y - 1, COLS);
@@ -687,7 +903,7 @@ static void share_result(int result, const char *reason, uint16_t work_id)
 		gc3355_devs[thr_id].rejected[chip_id]++;
 	gettimeofday(&timestr, NULL);
 	gc3355_devs[thr_id].last_share[chip_id] = timestr.tv_sec;
-	gc3355_devs[thr_id].shares[chip_id] += stratum.job.diff;
+	gc3355_devs[thr_id].shares[chip_id] += stratum->job.diff;
 	pthread_mutex_unlock(&stats_lock);
 	applog(LOG_INFO, "%s %08x GSD %d@%d",
 	   result ? "Accepted" : "Rejected",
@@ -717,6 +933,11 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 	if (have_stratum) {
 		uint32_t ntime, nonce;
 		char *ntimestr, *noncestr, *xnonce2str;
+		struct pool_details *pool;
+		
+		pthread_mutex_lock(&pool_lock);
+		pool = get_active_pool(pools);
+		pthread_mutex_unlock(&pool_lock);
 
 		if (!work->job_id)
 			return true;
@@ -730,14 +951,14 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 		pthread_mutex_unlock(&work_items_lock);
 		sprintf(s,
 			"{\"method\": \"mining.submit\", \"params\": [\"%s\", \"%s\", \"%s\", \"%s\", \"%s\"], \"id\":%d}",
-			rpc_user, work->job_id, xnonce2str, ntimestr, noncestr, id);
+			pool->rpc_user, work->job_id, xnonce2str, ntimestr, noncestr, id);
 		free(ntimestr);
 		free(noncestr);
 		free(xnonce2str);
 		
-		if (unlikely(!stratum_send_line(&stratum, s))) {
+		if (unlikely(!stratum_send_line(stratum, s))) {
 			applog(LOG_ERR, "submit_upstream_work stratum_send_line failed");
-			can_work = 0x0;
+			can_work = false;
 			struct work_items *work_item = pop_work_item(work_items, id);
 			if(work_item != NULL)
 				free(work_item);
@@ -745,7 +966,7 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 				applog(LOG_ERR, "Invalid work_id: %x", id);
 			goto out;
 		}
-		can_work = 0x1;
+		can_work = true;
 	}
 
 	rc = true;
@@ -762,9 +983,14 @@ static bool get_upstream_work(CURL *curl, struct work *work)
 	json_t *val;
 	bool rc;
 	struct timeval tv_start, tv_end, diff;
+	struct pool_details *pool;
+	
+	pthread_mutex_lock(&pool_lock);
+	pool = get_active_pool(pools);
+	pthread_mutex_unlock(&pool_lock);
 
 	gettimeofday(&tv_start, NULL);
-	val = json_rpc_call(curl, rpc_url, rpc_userpass, rpc_req,
+	val = json_rpc_call(curl, pool->rpc_url, pool->rpc_userpass, rpc_req,
 			    true, false, NULL);
 	gettimeofday(&tv_end, NULL);
 
@@ -815,8 +1041,8 @@ static bool workio_submit_work(struct workio_cmd *wc, CURL *curl)
 	/* submit solution to bitcoin via JSON-RPC */
 	while (!submit_upstream_work(curl, wc->u.work)) {
 		if (unlikely((opt_retries >= 0) && (++failures > opt_retries))) {
-			applog(LOG_ERR, "...terminating workio thread");
-			return false;
+			must_switch = true;
+			return true;
 		}
 
 		/* pause, then restart work-request loop */
@@ -991,18 +1217,23 @@ out:
 	return ret;
 }
 
+static void clean_stratum(struct stratum_ctx *sctx)
+{
+	if(sctx->curl)
+		stratum_disconnect(sctx);
+	memset(sctx, 0, sizeof(struct stratum_ctx));
+	pthread_mutex_init(&sctx->sock_lock, NULL);
+	pthread_mutex_init(&sctx->work_lock, NULL);
+}
+
 static void *stratum_thread(void *userdata)
 {
 	struct thr_info *mythr = userdata;
 	char *s;
-	int i;
+	int i, failures, restarted;
 	struct timeval timestr;
-	int restarted;
-	
-	stratum.url = tq_pop(mythr->q, NULL);
-	if (!stratum.url)
-		goto out;
-	applog(LOG_INFO, "Starting Stratum on %s", stratum.url);
+	static struct pool_details *pool, *main_pool;
+	bool switch_lock = false, switched = false, reconnect = false;
 	
 	g_works = calloc(opt_n_threads, sizeof(struct work));
 	for(i = 0; i < opt_n_threads; i++)
@@ -1011,37 +1242,79 @@ static void *stratum_thread(void *userdata)
 	}
 	gettimeofday(&timestr, NULL);
 	g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
+	pthread_mutex_lock(&g_work_lock);
+	g_work_time = 0;
+	pthread_mutex_unlock(&g_work_lock);
 	
 	while (1) {
-		int failures = 0;
 
-		while (!stratum.curl) {
+login:
+		switch_lock = true;
+		pthread_mutex_lock(&switch_pool_lock);
+		failures = 0;
+		if(must_switch || switched)
+		{
+			must_switch = false;
+			switched = false;
 			pthread_mutex_lock(&g_work_lock);
+			restart_threads();
+			can_work = false;
+			clean_stratum(stratum);
 			g_work_time = 0;
 			pthread_mutex_unlock(&g_work_lock);
-			restart_threads();
-
-			if (!stratum_connect(&stratum, stratum.url) ||
-			    !stratum_subscribe(&stratum) ||
-			    !stratum_authorize(&stratum, rpc_user, rpc_pass)) {
-				stratum_disconnect(&stratum);
-				if (opt_retries >= 0 && ++failures > opt_retries) {
-					applog(LOG_ERR, "...terminating workio thread");
-					tq_push(thr_info[work_thr_id].q, NULL);
-					goto out;
+		}
+		while (!stratum->curl)
+		{
+			pthread_mutex_lock(&pool_lock);
+			pool = get_active_pool(pools);
+			pthread_mutex_unlock(&pool_lock);
+			if(pool == NULL)
+			{
+				applog(LOG_ERR, "Stratum pool info incomplete");
+				goto out;
+			}
+			stratum->url = pool->rpc_url;
+			if(!reconnect)
+				applog(LOG_INFO, "Starting Stratum on %s", stratum->url);
+			reconnect = false;
+			if (!stratum_connect(stratum, stratum->url) ||
+			    !stratum_subscribe(stratum) ||
+			    !stratum_authorize(stratum, pool->rpc_user, pool->rpc_pass)) {
+				stratum_disconnect(stratum);
+				reconnect = true;
+				if (opt_retries >= 0 && ++failures > opt_retries)
+				{
+					failures = 0;
+					pthread_mutex_lock(&pool_lock);
+					pool = get_next_pool(pools);
+					set_active_pool(pools, pool, true);
+					main_pool = get_main_pool(pools);
+					pthread_mutex_unlock(&pool_lock);
+					if(pool != main_pool)
+					{
+						pthread_cond_signal(&check_pool_cond);
+					}
+					if(switch_lock)
+					{
+						switch_lock = false;
+						pthread_mutex_unlock(&switch_pool_lock);
+					}
+					applog(LOG_INFO, "Switching to pool: %s", pool->rpc_url);
+					switched = true;
+					goto login;
 				}
 				applog(LOG_ERR, "...retry after %d seconds", opt_fail_pause);
 				sleep(opt_fail_pause);
 			}
 		}
-
+		can_work = true;
 		restarted = 0;
-		if (stratum.job.job_id &&
-		    (strcmp(stratum.job.job_id, g_curr_job_id) || !g_work_time)) {
+		if (stratum->job.job_id &&
+		    (strcmp(stratum->job.job_id, g_curr_job_id) || !g_work_time)) {
 			pthread_mutex_lock(&g_work_lock);
-			pthread_mutex_lock(&stratum.work_lock);
+			pthread_mutex_lock(&stratum->work_lock);
 			g_prev_work_id = g_curr_work_id;
-			if (stratum.job.clean)
+			if (stratum->job.clean)
 			{
 				restart_threads();
 				applog(LOG_INFO, "Stratum detected new block");
@@ -1049,7 +1322,7 @@ static void *stratum_thread(void *userdata)
 				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
 				restarted = 1;
 			}
-			applog(LOG_INFO, "New job_id: %s Diff: %d", stratum.job.job_id, (int) (stratum.job.diff));
+			applog(LOG_INFO, "New Job_id: %s Diff: %d Work_id: %08x", stratum->job.job_id, (int) (stratum->job.diff), g_curr_work_id);
 			strcpy(g_prev_job_id, g_curr_job_id);
 			for(i = 0; i < 8; i++) g_prev_target[i] = g_curr_target[i];
 			for(i = 0; i < opt_n_threads; i++)
@@ -1058,35 +1331,40 @@ static void *stratum_thread(void *userdata)
 				g_works[i].target = g_prev_target;
 				g_works[i].work_id = g_prev_work_id;
 			}
-			strcpy(g_curr_job_id, stratum.job.job_id);
-			diff_to_target(g_curr_target, stratum.job.diff / 65536.0);
+			strcpy(g_curr_job_id, stratum->job.job_id);
+			diff_to_target(g_curr_target, stratum->job.diff / 65536.0);
 			for(i = 0; i < opt_n_threads; i++)
 			{
-				stratum_gen_work(&stratum, &g_works[i]);
+				stratum_gen_work(stratum, &g_works[i]);
 			}
 			time(&g_work_time);
-			pthread_mutex_unlock(&stratum.work_lock);
+			pthread_mutex_unlock(&stratum->work_lock);
 			pthread_mutex_unlock(&g_work_lock);
 		}
 		
-		if (!stratum_socket_full(&stratum, 60)) {
+		if (!stratum_socket_full(stratum, 60)) {
 			applog(LOG_ERR, "Stratum connection timed out");
 			s = NULL;
 		} else
-			s = stratum_recv_line(&stratum);
+			s = stratum_recv_line(stratum);
 		if (!s) {
-			stratum_disconnect(&stratum);
+			stratum_disconnect(stratum);
 			applog(LOG_ERR, "Stratum connection interrupted");
+			if(switch_lock)
+			{
+				switch_lock = false;
+				pthread_mutex_unlock(&switch_pool_lock);
+			}
 			continue;
 		}
-		if (!stratum_handle_method(&stratum, s))
+		if (!stratum_handle_method(stratum, s))
 			stratum_handle_response(s);
 		else if(!restarted)
 		{
-			if(stratum.job.diff != stratum.next_diff && stratum.next_diff > 0)
+			if(stratum->job.diff != stratum->next_diff && stratum->next_diff > 0)
 			{
 				pthread_mutex_lock(&g_work_lock);
-				pthread_mutex_lock(&stratum.work_lock);
+				pthread_mutex_lock(&stratum->work_lock);
 				restart_threads();
 				applog(LOG_INFO, "Stratum difficulty changed");
 				for(i = 0; i < 8; i++) g_prev_target[i] = g_curr_target[i];
@@ -1098,24 +1376,68 @@ static void *stratum_thread(void *userdata)
 				}
 				gettimeofday(&timestr, NULL);
 				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
-				stratum.job.diff = stratum.next_diff;
-				diff_to_target(g_curr_target, stratum.job.diff / 65536.0);
+				stratum->job.diff = stratum->next_diff;
+				diff_to_target(g_curr_target, stratum->job.diff / 65536.0);
 				applog(LOG_INFO, "Dispatching new work to GC3355 threads");
 				for(i = 0; i < opt_n_threads; i++)
 				{
-					stratum_gen_work(&stratum, &g_works[i]);
+					stratum_gen_work(stratum, &g_works[i]);
 				}
-				pthread_mutex_unlock(&stratum.work_lock);
+				pthread_mutex_unlock(&stratum->work_lock);
 				pthread_mutex_unlock(&g_work_lock);
 			}
 		}
 		free(s);
+		if(switch_lock)
+		{
+			switch_lock = false;
+			pthread_mutex_unlock(&switch_pool_lock);
+			usleep(1000);
+		}
 	}
 	
 	free(g_works);
 
 out:
 	return NULL;
+}
+
+static void *check_pool_thread()
+{
+	static struct pool_details *main_pool;
+	static struct pool_details *active_pool;
+	pthread_cond_init(&check_pool_cond, NULL);
+	while(1)
+	{
+		pthread_mutex_lock(&pool_lock);
+		main_pool = get_main_pool(pools);
+		active_pool = get_active_pool(pools);
+		pthread_mutex_unlock(&pool_lock);
+		if(active_pool != main_pool)
+		{
+			applog(LOG_INFO, "Checking main pool: %s", main_pool->rpc_url);
+			if(check_pool_alive(main_pool))
+			{
+				pthread_mutex_lock(&switch_pool_lock);
+				applog(LOG_INFO, "Main pool is alive, attempting to switch");
+				pthread_mutex_lock(&pool_lock);
+				clear_pool_tried(pools);
+				set_active_pool(pools, main_pool, true);
+				pthread_mutex_unlock(&pool_lock);
+				must_switch = true;
+				pthread_mutex_unlock(&switch_pool_lock);
+				goto wait;
+			}
+		}
+		else
+		{
+wait:
+			pthread_mutex_lock(&check_pool_lock);
+			pthread_cond_wait(&check_pool_cond, &check_pool_lock);
+			pthread_mutex_unlock(&check_pool_lock);
+		}
+		sleep(60);
+	}
 }
 
 #ifndef WIN32
@@ -1375,6 +1697,7 @@ static void parse_arg (int key, char *arg)
 {
 	char *p;
 	int v, i;
+	struct pool_details *pool;
 
 	switch(key) {
 	case 'd':
@@ -1418,8 +1741,7 @@ static void parse_arg (int key, char *arg)
 		opt_debug = true;
 		break;
 	case 'p':
-		free(rpc_pass);
-		rpc_pass = strdup(arg);
+		add_pool_pass(pools, gpool, arg);
 		break;
 	case 'P':
 		opt_protocol = true;
@@ -1443,57 +1765,39 @@ static void parse_arg (int key, char *arg)
 		opt_timeout = v;
 		break;
 	case 'u':
-		free(rpc_user);
-		rpc_user = strdup(arg);
+		add_pool_user(pools, gpool, arg);
 		break;
 	case 'o':			/* --url */
+		pool = gpool;
 		p = strstr(arg, "://");
 		if (p) {
 			if (strncasecmp(arg, "http://", 7) && strncasecmp(arg, "https://", 8) &&
 					strncasecmp(arg, "stratum+tcp://", 14))
 				show_usage_and_exit(1);
-			free(rpc_url);
-			rpc_url = strdup(arg);
+			add_pool_url(pools, gpool, arg);
 		} else {
 			if (!strlen(arg) || *arg == '/')
 				show_usage_and_exit(1);
-			free(rpc_url);
-			rpc_url = malloc(strlen(arg) + 8);
+			char *rpc_url = malloc(strlen(arg) + 8);
 			sprintf(rpc_url, "http://%s", arg);
+			add_pool_url(pools, gpool, rpc_url);
+			free(rpc_url);
 		}
-		p = strrchr(rpc_url, '@');
-		if (p) {
-			char *sp, *ap;
-			*p = '\0';
-			ap = strstr(rpc_url, "://") + 3;
-			sp = strchr(ap, ':');
-			if (sp) {
-				free(rpc_userpass);
-				rpc_userpass = strdup(ap);
-				free(rpc_user);
-				rpc_user = calloc(sp - ap + 1, 1);
-				strncpy(rpc_user, ap, sp - ap);
-				free(rpc_pass);
-				rpc_pass = strdup(sp + 1);
-			} else {
-				free(rpc_user);
-				rpc_user = strdup(ap);
-			}
-			memmove(ap, p + 1, strlen(p + 1) + 1);
-		}
-		have_stratum = !strncasecmp(rpc_url, "stratum", 7);
+		if(pool == NULL)
+			pool = gpool;
+		have_stratum = !strncasecmp(pool->rpc_url, "stratum", 7);
 		break;
 	case 'O':			/* --userpass */
 		p = strchr(arg, ':');
 		if (!p)
 			show_usage_and_exit(1);
-		free(rpc_userpass);
-		rpc_userpass = strdup(arg);
-		free(rpc_user);
-		rpc_user = calloc(p - arg + 1, 1);
+		char *rpc_user = calloc(p - arg + 1, 1);
 		strncpy(rpc_user, arg, p - arg);
+		char *rpc_pass = strdup(p + 1);
+		add_pool_user(pools, gpool, rpc_user);
+		add_pool_pass(pools, gpool, rpc_pass);
+		free(rpc_user);
 		free(rpc_pass);
-		rpc_pass = strdup(p + 1);
 		break;
 	case 'V':
 		show_version_and_exit();
@@ -1528,7 +1832,7 @@ static void parse_cmdline(int argc, char *argv[])
 
 static void clean_up()
 {
-	can_work = 0x0;
+	can_work = false;
 	if(opt_curses)
 	{
 		applog(LOG_INFO, "Clean up");
@@ -1582,22 +1886,24 @@ int main(int argc, char *argv[])
 	long flags;
 	int i;
 	
-	time(&time_start);
-
-	rpc_url = strdup(DEF_RPC_URL);
-	rpc_user = strdup("");
-	rpc_pass = strdup("");
-
-	/* parse command line */
-	parse_cmdline(argc, argv);
-
 	pthread_mutex_init(&applog_lock, NULL);
 	pthread_mutex_init(&stats_lock, NULL);
 	pthread_mutex_init(&tui_lock, NULL);
 	pthread_mutex_init(&g_work_lock, NULL);
-	pthread_mutex_init(&stratum.sock_lock, NULL);
-	pthread_mutex_init(&stratum.work_lock, NULL);
 	pthread_mutex_init(&work_items_lock, NULL);
+	pthread_mutex_init(&pool_lock, NULL);
+	pthread_mutex_init(&check_pool_lock, NULL);
+	pthread_mutex_init(&switch_pool_lock, NULL);
+	stratum = calloc(1, sizeof(struct stratum_ctx));
+	pthread_mutex_init(&stratum->sock_lock, NULL);
+	pthread_mutex_init(&stratum->work_lock, NULL);
+	
+	time(&time_start);
+
+	pools = init_pool_details();
+	
+	/* parse command line */
+	parse_cmdline(argc, argv);
 
 #ifndef WIN32
 	signal(SIGHUP, signal_handler);
@@ -1606,8 +1912,14 @@ int main(int argc, char *argv[])
 	signal(SIGSEGV, signal_handler);
 	signal(SIGWINCH, signal_handler);
 #endif
-	
-	flags = strncmp(rpc_url, "https:", 6)
+
+	struct pool_details *pool = get_main_pool(pools);
+	if(pool == NULL)
+	{
+		pool = new_pool(true);
+		set_active_pool(pools, pool, true);
+	}
+	flags = strncmp(pool->rpc_url, "https:", 6)
 	      ? (CURL_GLOBAL_ALL & ~CURL_GLOBAL_SSL)
 	      : CURL_GLOBAL_ALL;
 	if (curl_global_init(flags)) {
@@ -1640,14 +1952,6 @@ int main(int argc, char *argv[])
 		applog(LOG_ERR, "No GC3355 devices specified, please use --gc3355-detect for auto-detection, or manually specify with --gc3355=DEV0,DEV1,...,DEVn");
 		exit(1);
 	}
-	
-	if(opt_curses)
-	{
-		pthread_mutex_lock(&tui_lock);
-		init_tui();
-		start_tui();
-		pthread_mutex_unlock(&tui_lock);
-	}
 
 	struct gc3355_dev devs[opt_n_threads];
 	memset(&devs, 0, sizeof(devs));
@@ -1655,18 +1959,11 @@ int main(int argc, char *argv[])
 	
 	work_items = init_work_items();
 
-	if (!rpc_userpass) {
-		rpc_userpass = malloc(strlen(rpc_user) + strlen(rpc_pass) + 2);
-		if (!rpc_userpass)
-			return 1;
-		sprintf(rpc_userpass, "%s:%s", rpc_user, rpc_pass);
-	}
-
 	work_restart = calloc(opt_n_threads, sizeof(*work_restart));
 	if (!work_restart)
 		return 1;
 
-	thr_info = calloc(opt_n_threads + 6, sizeof(*thr));
+	thr_info = calloc(opt_n_threads + 7, sizeof(*thr));
 	if (!thr_info)
 		return 1;
 
@@ -1677,11 +1974,28 @@ int main(int argc, char *argv[])
 	thr->q = tq_new();
 	if (!thr->q)
 		return 1;
-
+		
 	/* start work I/O thread */
 	if (pthread_create(&thr->pth, NULL, workio_thread, thr)) {
 		applog(LOG_ERR, "workio thread create failed");
 		return 1;
+	}
+	
+	check_pool_thr_id = opt_n_threads + 7;
+	thr = &thr_info[check_pool_thr_id];
+	thr->id = check_pool_thr_id;
+	/* start check_pool thread */
+	if (unlikely(pthread_create(&thr->pth, NULL, check_pool_thread, thr))) {
+		applog(LOG_ERR, "check_pool thread create failed");
+		return 1;
+	}
+	
+	if(opt_curses)
+	{
+		pthread_mutex_lock(&tui_lock);
+		init_tui();
+		start_tui();
+		pthread_mutex_unlock(&tui_lock);
 	}
 	
 	if (want_stratum) {
@@ -1698,9 +2012,6 @@ int main(int argc, char *argv[])
 			applog(LOG_ERR, "stratum thread create failed");
 			return 1;
 		}
-
-		if (have_stratum)
-			tq_push(thr_info[stratum_thr_id].q, strdup(rpc_url));
 	}
 	/* start mining threads */
 
