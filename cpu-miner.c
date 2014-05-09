@@ -117,7 +117,7 @@ static struct gc3355_dev *gc3355_devs;
 static struct gc3355_devices *device_list;
 static unsigned int gc3355_time_start;
 
-bool opt_refresh = true;
+bool opt_refresh = false;
 bool opt_log = false;
 bool opt_curses = true;
 bool opt_debug = false;
@@ -1310,7 +1310,7 @@ login:
 			pthread_mutex_lock(&g_work_lock);
 			pthread_mutex_lock(&stratum->work_lock);
 			g_prev_work_id = g_curr_work_id;
-			if (stratum->job.clean || opt_refresh || time(NULL) >= g_work_update_time + 60)
+			if (stratum->job.clean || time(NULL) >= g_work_update_time + 60)
 			{
 				restart_threads();
 				if(stratum->job.clean)

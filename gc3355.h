@@ -458,6 +458,12 @@ static unsigned short prev_freq(struct gc3355_dev *gc3355, int chip_id)
 	return gc3355->freq[chip_id] - GC3355_OVERCLOCK_FREQ_STEP >= GC3355_MIN_FREQ ? gc3355->freq[chip_id] - GC3355_OVERCLOCK_FREQ_STEP : gc3355->freq[chip_id];
 }
 
+static void gc3355_reset(struct gc3355_dev *gc3355)
+{
+	gc3355_send_cmds(gc3355, single_cmd_reset);
+	applog(LOG_DEBUG, "%d: Resetting GC3355 cores", gc3355->id);
+}
+
 /*
  * miner thread
  */
@@ -595,6 +601,7 @@ static void *gc3355_thread(void *userdata)
 		}
 		if (work_restart[thr_id].restart || memcmp(work.data, g_works[thr_id].data, 76))
 		{
+			gc3355_reset(gc3355);
 			pthread_mutex_lock(&g_work_lock);
 			for(i = 0; i < 32; i++)
 				work.data[i] = g_works[thr_id].data[i];
@@ -683,9 +690,9 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			if(timestr.tv_sec - last > opt_gc3355_timeout)
 			{
 				gc3355_restart(gc3355);
+				gc3355_reset(gc3355);
 			}
 		}
-		applog(LOG_DEBUG, "%d: Dispatching new work to GC3355 cores (0x%x)", gc3355->id, work->work_id);
 		unsigned char bin[156];
 		// swab for big endian
 		uint32_t midstate2[8];
@@ -707,8 +714,6 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 		memcpy(bin+148, "\xff\xff\xff\xff", 4);
 		memcpy(bin+152, (unsigned char[]){work->work_id >> 24, work->work_id >> 16, work->work_id >> 8, work->work_id}, 4);
 		// clear read buffer
-		gc3355_send_cmds(gc3355, single_cmd_reset);
-		usleep(100000);
 		do
 		{
 			unsigned char buf[1];
@@ -724,6 +729,7 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			gc3355->time_now[i] = time_now;
 			gc3355->last_nonce[i] = i * (0xffffffff / gc3355->chips);
 		}
+		applog(LOG_DEBUG, "%d: Dispatching new work to GC3355 cores (0x%x)", gc3355->id, work->work_id);
 	}
 	
 	while(!work_restart[thr_id].restart && (ret = gc3355_gets(gc3355, (unsigned char *)rptbuf, 12)) <= 0 && !work_restart[thr_id].restart)
