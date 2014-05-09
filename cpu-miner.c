@@ -62,11 +62,6 @@ enum sha256_algos {
 	ALGO_SHA256D,		/* SHA-256d */
 };
 
-static const char *algo_names[] = {
-	[ALGO_SCRYPT]		= "scrypt",
-	[ALGO_SHA256D]		= "sha256d",
-};
-
 #define GC3355_DEFAULT_CHIPS 5
 #define API_DEFAULT_PORT 4028
 #define API_QUEUE 16
@@ -491,7 +486,7 @@ static uint16_t push_work_item(struct work_items *items, struct work *work)
 	if(prev != NULL)
 		free(prev);
 	list_add(&item->list, &items->list);
-	items->id = (++items->id & 0xfff) | 0xf00;
+	items->id = ((items->id + 1) & 0xfff) | 0xf00;
 	return item->work_id;
 }
 
@@ -691,7 +686,6 @@ static void resize_tui()
 
 static void *tui_user_thread(void *userdata)
 {
-	struct thr_info *mythr = userdata;
 	int ch;
 	while(opt_curses && (ch = getch()))
 	{
@@ -718,7 +712,6 @@ static void *tui_user_thread(void *userdata)
 
 static void *tui_main_thread(void *userdata)
 {
-	struct thr_info *mythr = userdata;
 	char *p, *no_pool = "-";
 	int i, j;
 	struct timeval timestr;
@@ -928,9 +921,7 @@ static void restart_threads(void)
 
 static bool submit_upstream_work(CURL *curl, struct work *work)
 {
-	json_t *val, *res, *reason;
 	char s[345];
-	int i;
 	uint16_t id;
 	bool rc = false;
 
@@ -1232,7 +1223,6 @@ static void clean_stratum(struct stratum_ctx *sctx)
 
 static void *stratum_thread(void *userdata)
 {
-	struct thr_info *mythr = userdata;
 	char *s;
 	int i, failures, restarted;
 	struct timeval timestr;
@@ -1245,7 +1235,7 @@ static void *stratum_thread(void *userdata)
 		g_works[i].thr_id = i;
 	}
 	gettimeofday(&timestr, NULL);
-	g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
+	g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | (timestr.tv_usec & 0xffff);
 	pthread_mutex_lock(&g_work_lock);
 	g_work_time = 0;
 	g_work_update_time = 0;
@@ -1326,7 +1316,7 @@ login:
 				if(stratum->job.clean)
 					applog(LOG_INFO, "Stratum detected new block");
 				gettimeofday(&timestr, NULL);
-				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
+				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | (timestr.tv_usec & 0xffff);
 				restarted = 1;
 				time(&g_work_update_time);
 			}
@@ -1383,7 +1373,7 @@ login:
 					g_works[i].work_id = g_prev_work_id;
 				}
 				gettimeofday(&timestr, NULL);
-				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | timestr.tv_usec & 0xffff;
+				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | (timestr.tv_usec & 0xffff);
 				stratum->job.diff = stratum->next_diff;
 				diff_to_target(g_curr_target, stratum->job.diff / 65536.0);
 				applog(LOG_INFO, "Dispatching new work to GC3355 threads");
@@ -1416,7 +1406,6 @@ static void *check_pool_thread()
 {
 	static struct pool_details *main_pool;
 	static struct pool_details *active_pool;
-	pthread_cond_init(&check_pool_cond, NULL);
 	while(1)
 	{
 		pthread_mutex_lock(&pool_lock);
@@ -1448,6 +1437,7 @@ wait:
 		}
 		sleep(60);
 	}
+	return NULL;
 }
 
 #ifndef WIN32
@@ -1550,7 +1540,7 @@ static void *api_request_handler(void *socket)
 {
 	pthread_detach(pthread_self());
 	int sock = *(int*)socket;
-    int i, j, read_size, read_pos, buffer_size = 256, err_size = 256;
+    int read_size, read_pos, buffer_size = 256, err_size = 256;
     char request[buffer_size], *message, *pos, err_msg[err_size];
 	const char *api_get, *api_set;
 	json_t *obj, *req, *get, *set, *err;
@@ -1635,7 +1625,6 @@ write:
 #ifndef WIN32
 static void *api_thread(void *userdata)
 {
-	struct thr_info *mythr = userdata;
     int new_socket, *psocket, c, yes;
     struct sockaddr_in server, client;
 	char client_ip[INET_ADDRSTRLEN];
@@ -1706,7 +1695,7 @@ static void show_usage_and_exit(int status)
 static void parse_arg (int key, char *arg)
 {
 	char *p;
-	int v, i;
+	int v;
 	struct pool_details *pool;
 
 	switch(key) {
@@ -1897,7 +1886,6 @@ int main(int argc, char *argv[])
 {
 	struct thr_info *thr;
 	long flags;
-	int i;
 	
 	pthread_mutex_init(&applog_lock, NULL);
 	pthread_mutex_init(&stats_lock, NULL);
@@ -1910,6 +1898,7 @@ int main(int argc, char *argv[])
 	stratum = calloc(1, sizeof(struct stratum_ctx));
 	pthread_mutex_init(&stratum->sock_lock, NULL);
 	pthread_mutex_init(&stratum->work_lock, NULL);
+	pthread_cond_init(&check_pool_cond, NULL);
 	
 	time(&time_start);
 
@@ -2002,7 +1991,7 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 	
-	check_pool_thr_id = opt_n_threads + 7;
+	check_pool_thr_id = opt_n_threads + 6;
 	thr = &thr_info[check_pool_thr_id];
 	thr->id = check_pool_thr_id;
 	/* start check_pool thread */

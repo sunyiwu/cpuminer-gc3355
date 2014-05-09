@@ -328,7 +328,6 @@ static int gc3355_write(struct gc3355_dev *gc3355, const void *buf, size_t bufle
 static int gc3355_gets(struct gc3355_dev *gc3355, unsigned char *buf, int read_amount)
 {
 	int fd;
-	unsigned char	*bufhead, *p;
 	ssize_t nread = 0;
 	
 	fd = gc3355->dev_fd;
@@ -362,8 +361,7 @@ static void gc3355_send_cmds(struct gc3355_dev *gc3355, const unsigned char *cmd
 
 static uint32_t gc3355_get_firmware_version(struct gc3355_dev *gc3355)
 {
-	unsigned char detect_data[16];
-	char buf[12];
+	unsigned char buf[12];
 	int read;
 	
 	gc3355_send_cmds(gc3355, firmware_request_cmd);
@@ -468,13 +466,12 @@ static void *gc3355_thread(void *userdata)
 	struct thr_info	*mythr = userdata;
 	int thr_id = mythr->id;
 	struct gc3355_dev *gc3355;
-	struct work work = {0};
+	struct work work = {};
 	unsigned char *scratchbuf = NULL;
-	int i, chips, rc;
+	int i, rc;
 	struct timeval timestr;
 	struct dev_freq *dev_freq_curr;
 	struct chip_freq *chip_freq_curr;
-	unsigned char rptbuf[12];
 	
 	work.job_id = malloc(1);
 	work.thr_id = thr_id;
@@ -553,7 +550,7 @@ static void *gc3355_thread(void *userdata)
 				{
 					for(i = 0; i < gc3355->chips; i++) gc3355->freq[i] = fix_freq(chip_freq_curr->freq);
 				}
-				else gc3355->freq[chip_freq_curr->chip_id] = fix_freq(chip_freq_curr->freq);
+				else gc3355->freq[(unsigned short)chip_freq_curr->chip_id] = fix_freq(chip_freq_curr->freq);
 				if(chip_freq_curr->next == NULL) break;
 			}
 		}
@@ -627,6 +624,7 @@ static void *gc3355_thread(void *userdata)
 			break;
 	}
 	gc3355_exit(gc3355);
+	return NULL;
 }
 
 static void gc3355_restart(struct gc3355_dev *gc3355)
@@ -733,7 +731,6 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 		{
 			uint32_t nonce, work_id, hash[8];
 			const uint32_t Htarg = ptarget[7];
-			unsigned char bin[32];
 			int stop, chip_id;
 			unsigned short freq;
 			unsigned int add_hashes = 0;
