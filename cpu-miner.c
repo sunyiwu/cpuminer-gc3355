@@ -1465,7 +1465,7 @@ static bool api_parse_get(const char *api_get, json_t *obj, json_t *err)
 				json_object_set_new(chip, API_CHIP_HASHRATE, json_integer(gc3355_devs[i].hashrate[j]));
 				json_object_set_new(chip, API_CHIP_SHARES, json_integer(gc3355_devs[i].shares[j]));
 				json_object_set_new(chip, API_LAST_SHARE, json_integer(gc3355_devs[i].last_share[j]));
-				json_object_set_new(chip, API_AUTOTUNE, json_integer(opt_gc3355_autotune ? (gc3355_devs[i].adjust[j] > 0 ? 1 : -1) : 0);
+				json_object_set_new(chip, API_AUTOTUNE, json_integer(opt_gc3355_autotune ? (gc3355_devs[i].adjust[j] > 0 ? 1 : -1) : 0));
 				json_array_append_new(chips, chip);
 			}
 			json_object_set_new(dev, API_CHIPS, chips);
