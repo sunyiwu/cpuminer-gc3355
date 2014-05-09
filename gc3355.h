@@ -550,7 +550,7 @@ static void *gc3355_thread(void *userdata)
 				{
 					for(i = 0; i < gc3355->chips; i++) gc3355->freq[i] = fix_freq(chip_freq_curr->freq);
 				}
-				else gc3355->freq[(unsigned short)chip_freq_curr->chip_id] = fix_freq(chip_freq_curr->freq);
+				else gc3355->freq[chip_freq_curr->chip_id % GC3355_MAX_CHIPS] = fix_freq(chip_freq_curr->freq);
 				if(chip_freq_curr->next == NULL) break;
 			}
 		}
@@ -707,13 +707,14 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 		memcpy(bin+148, "\xff\xff\xff\xff", 4);
 		memcpy(bin+152, (unsigned char[]){work->work_id >> 24, work->work_id >> 16, work->work_id >> 8, work->work_id}, 4);
 		// clear read buffer
+		gc3355_send_cmds(gc3355, single_cmd_reset);
+		usleep(100000);
 		do
 		{
 			unsigned char buf[1];
 			ret = read(gc3355->dev_fd, buf, 1);
 		}
 		while(ret);
-		gc3355_send_cmds(gc3355, single_cmd_reset);
 		gc3355_write(gc3355, bin, 156);
 		gc3355->resend = false;
 		gettimeofday(&timestr, NULL);
