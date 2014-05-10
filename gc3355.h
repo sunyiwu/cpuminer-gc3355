@@ -75,7 +75,7 @@ typedef unsigned int speed_t;
 #include <gc3355-commands.h>
 #include <string.h>
 
-#define GC3355_OVERCLOCK_MAX_HWE 3
+#define GC3355_OVERCLOCK_MAX_HWE 2
 #define GC3355_OVERCLOCK_ADJUST_MIN 10
 #define GC3355_OVERCLOCK_ADJUST_STEPS 3845
 #define GC3355_OVERCLOCK_FREQ_STEP 25
@@ -109,7 +109,7 @@ struct gc3355_devices
 	char *serial;
 };
 
-static char can_start = 0x0;
+static uint16_t can_start = 0;
 static struct dev_freq *dev_freq_root;
 
 #ifndef WIN32
@@ -359,6 +359,20 @@ static void gc3355_send_cmds(struct gc3355_dev *gc3355, const unsigned char *cmd
 	}
 }
 
+static void gc3355_send_chip_cmds(struct gc3355_dev *gc3355, const unsigned char *cmds[], unsigned char chip_id)
+{
+	int i;
+	for(i = 0; cmds[i] != NULL; i++)
+	{
+		int size = cmds[i][0];
+		unsigned char chip_cmd[size];
+		memcpy(chip_cmd, cmds[i] + 1, size);
+		if(chip_cmd[2] == 0x1f)
+			chip_cmd[2] = 0x10 | chip_id;
+		gc3355_write(gc3355, chip_cmd, size);
+	}
+}
+
 static uint32_t gc3355_get_firmware_version(struct gc3355_dev *gc3355)
 {
 	unsigned char buf[12];
@@ -458,10 +472,16 @@ static unsigned short prev_freq(struct gc3355_dev *gc3355, int chip_id)
 	return gc3355->freq[chip_id] - GC3355_OVERCLOCK_FREQ_STEP >= GC3355_MIN_FREQ ? gc3355->freq[chip_id] - GC3355_OVERCLOCK_FREQ_STEP : gc3355->freq[chip_id];
 }
 
-static void gc3355_reset(struct gc3355_dev *gc3355)
+static void gc3355_reset_all(struct gc3355_dev *gc3355)
 {
 	gc3355_send_cmds(gc3355, single_cmd_reset);
-	applog(LOG_DEBUG, "%d: Resetting GC3355 cores", gc3355->id);
+	applog(LOG_DEBUG, "%d: Resetting GC3355 chips", gc3355->id);
+}
+
+static void gc3355_reset_single(struct gc3355_dev *gc3355, unsigned char chip_id)
+{
+	gc3355_send_chip_cmds(gc3355, single_cmd_reset, chip_id);
+	applog(LOG_DEBUG, "%d: Resetting GC3355 chip #%d", gc3355->id, chip_id);
 }
 
 /*
@@ -496,6 +516,7 @@ static void *gc3355_thread(void *userdata)
 		gc3355_exit(gc3355);
 	}
 	gc3355_send_cmds(gc3355, single_cmd_init);
+	gc3355_reset_all(gc3355);
 	sleep(1);
 	// clear read buffer
 	do
@@ -599,10 +620,13 @@ static void *gc3355_thread(void *userdata)
 			while (can_start < opt_n_threads || !can_work || g_works[thr_id].job_id == NULL || time(NULL) >= g_work_time + 120)
 			usleep(100000);
 		}
-		if (work_restart[thr_id].restart || memcmp(work.data, g_works[thr_id].data, 76))
+		if (work_restart[thr_id].restart || strcmp(work.job_id, g_works[thr_id].job_id))
 		{
-			gc3355_reset(gc3355);
+			gc3355_reset_all(gc3355);
 			pthread_mutex_lock(&g_work_lock);
+			pthread_mutex_lock(&stratum->work_lock);
+			stratum_gen_work(stratum, &g_works[thr_id]);
+			pthread_mutex_unlock(&stratum->work_lock);
 			for(i = 0; i < 32; i++)
 				work.data[i] = g_works[thr_id].data[i];
 			work.target = g_works[thr_id].target;
@@ -690,7 +714,7 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 			if(timestr.tv_sec - last > opt_gc3355_timeout)
 			{
 				gc3355_restart(gc3355);
-				gc3355_reset(gc3355);
+				gc3355_reset_all(gc3355);
 			}
 		}
 		unsigned char bin[156];
@@ -734,7 +758,7 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 	
 	while(!work_restart[thr_id].restart && (ret = gc3355_gets(gc3355, (unsigned char *)rptbuf, 12)) <= 0 && !work_restart[thr_id].restart)
 	{
-		if (rptbuf[0] == 0x55 || rptbuf[1] == 0x20)
+		if (rptbuf[0] == 0x55 && rptbuf[1] == 0x20)
 		{
 			uint32_t nonce, work_id, hash[8];
 			const uint32_t Htarg = ptarget[7];
@@ -857,7 +881,6 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 							}
 							else
 							{
-
 								if(next_f != freq)
 									applog(LOG_DEBUG, "%d@%d: ~%d steps until frequency adjusts to %dMHz", gc3355->id, chip_id, steps, next_f);
 								else

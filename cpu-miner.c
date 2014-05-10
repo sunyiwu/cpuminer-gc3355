@@ -495,6 +495,8 @@ static uint16_t push_work_item(struct work_items *items, struct work *work)
 
 static bool submit_work(struct thr_info *thr, const struct work *work_in);
 
+static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work);
+
 /* added for GC3355 chip miner */
 #include "gc3355.h"
 /* end */
@@ -1334,10 +1336,6 @@ login:
 			}
 			strcpy(g_curr_job_id, stratum->job.job_id);
 			diff_to_target(g_curr_target, stratum->job.diff / 65536.0);
-			for(i = 0; i < opt_n_threads; i++)
-			{
-				stratum_gen_work(stratum, &g_works[i]);
-			}
 			time(&g_work_time);
 			pthread_mutex_unlock(&stratum->work_lock);
 			pthread_mutex_unlock(&g_work_lock);
@@ -1379,11 +1377,6 @@ login:
 				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | (timestr.tv_usec & 0xffff);
 				stratum->job.diff = stratum->next_diff;
 				diff_to_target(g_curr_target, stratum->job.diff / 65536.0);
-				applog(LOG_INFO, "Dispatching new work to GC3355 threads");
-				for(i = 0; i < opt_n_threads; i++)
-				{
-					stratum_gen_work(stratum, &g_works[i]);
-				}
 				time(&g_work_update_time);
 				time(&g_work_time);
 				pthread_mutex_unlock(&stratum->work_lock);
