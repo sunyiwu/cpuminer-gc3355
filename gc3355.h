@@ -255,7 +255,7 @@ static int gc3355_open(struct gc3355_dev *gc3355, speed_t baud)
 	SetCommConfig(hSerial, &comCfg, sizeof(comCfg));
 
 	// Code must specify a valid timeout value (0 means don't timeout)
-	const DWORD ctoms = (timeout * 100);
+	const DWORD ctoms = timeout;
 	COMMTIMEOUTS cto = {ctoms, 0, ctoms, 0, ctoms};
 	SetCommTimeouts(hSerial, &cto);
 
@@ -301,7 +301,7 @@ static int gc3355_open(struct gc3355_dev *gc3355, speed_t baud)
 	my_termios.c_lflag &= ~(ECHO | ECHOE | ECHONL | ICANON | ISIG | IEXTEN);
 
 	// Code must specify a valid timeout value (0 means don't timeout)
-	my_termios.c_cc[VTIME] = (cc_t)1;
+	my_termios.c_cc[VTIME] = (cc_t)0;
 	my_termios.c_cc[VMIN] = 0;
 	
 	tcsetattr(fd, TCSANOW, &my_termios);
