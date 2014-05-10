@@ -117,7 +117,7 @@ static bool opt_gc3355_detect = false;
 static struct gc3355_dev *gc3355_devs;
 static struct gc3355_devices *device_list;
 static unsigned int gc3355_time_start;
-
+static json_t *opt_config;
 bool opt_refresh = false;
 bool opt_log = false;
 bool opt_curses = true;
@@ -130,6 +130,7 @@ static int opt_retries = 2;
 static int opt_fail_pause = 5;
 int opt_timeout = 270;
 int opt_scantime = 5;
+static json_t *opt_config;
 static int opt_n_threads;
 struct thr_info *thr_info;
 static int work_thr_id;
@@ -193,6 +194,7 @@ Options:\n\
   -q, --quiet           								disable per-thread hashmeter output\n\
   -D, --debug           								enable debug output\n\
   -P, --protocol-dump   								verbose dump of protocol-level activities\n\
+  -c, --config=FILE     								load a JSON-format configuration file\n\
   -V, --version         								display version information and exit\n\
   -h, --help            								display this help text and exit\n";
 
@@ -203,10 +205,12 @@ static char const short_options[] =
 static struct option const options[] = {
 	{ "gc3355", 1, NULL, 'G' },
 	{ "gc3355-detect", 0, NULL, 'd' },
+	{ "config", 1, NULL, 'c' },
+	{ "pools", 1, NULL, '\0' },
 	{ "freq", 1, NULL, 'F' },
 	{ "gc3355-freq", 1, NULL, 'f' },
 	{ "gc3355-autotune", 0, NULL, 'A' },
-	{ "gc3355-chips", 1, NULL, 'c' },
+	{ "gc3355-chips", 1, NULL, 'n' },
 	{ "gc3355-timeout", 1, NULL, 'x' },
 	{ "no-refresh", 0, NULL, 'w' },
 	{ "api-port", 1, NULL, 'a' },
@@ -1694,7 +1698,7 @@ static void show_usage_and_exit(int status)
 	exit(status);
 }
 
-static void parse_arg (int key, char *arg)
+static void parse_arg (int key, char *arg, char *pname)
 {
 	char *p;
 	int v;
@@ -1718,7 +1722,7 @@ static void parse_arg (int key, char *arg)
 	case 'A':
 		opt_gc3355_autotune = true;
 		break;
-	case 'c':
+	case 'n':
 		opt_gc3355_chips = atoi(arg);
 		break;
 	case 'x':
@@ -1727,6 +1731,25 @@ static void parse_arg (int key, char *arg)
 	case 'a':
 		opt_api_port = atoi(arg);
 		break;
+	case 'c': {
+		json_error_t err;
+		if (opt_config)
+			json_decref(opt_config);
+#if JANSSON_VERSION_HEX >= 0x020000
+		opt_config = json_load_file(arg, 0, &err);
+#else
+		opt_config = json_load_file(arg, &err);
+#endif
+		if (!json_is_object(opt_config)) {
+			if (err.line < 0)
+				fprintf(stderr, "%s: %s\n", pname, err.text);
+			else
+				fprintf(stderr, "%s: %s:%d: %s\n",
+					pname, arg, err.line, err.text);
+			exit(1);
+		}
+		break;
+	}
 	case 'w':
 		opt_refresh = false;
 		break;
@@ -1812,6 +1835,64 @@ static void parse_arg (int key, char *arg)
 	}
 }
 
+static void parse_config(char *pname)
+{
+	int i, j, k;
+	json_t *val;
+
+	if (!json_is_object(opt_config))
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(options); i++) {
+		if (!options[i].name)
+			break;
+		if (!strcmp(options[i].name, "config"))
+			continue;
+
+		val = json_object_get(opt_config, options[i].name);
+		if (!val)
+			continue;
+
+		if (options[i].has_arg && json_is_string(val)) {
+			char *s = strdup(json_string_value(val));
+			if (!s)
+				break;
+			parse_arg(options[i].val, s, pname);
+			free(s);
+		} else if (!options[i].has_arg && json_is_true(val))
+			parse_arg(options[i].val, "", pname);
+		else if(json_is_array(val))
+		{
+			for(j = 0; j < json_array_size(val); j++)
+			{
+				json_t *obj, *value;
+				obj = json_array_get(val, j);
+				for (k = 0; k < ARRAY_SIZE(options); k++)
+				{
+					if (!options[k].name)
+						break;
+					value = json_object_get(obj, options[k].name);
+					if (!value)
+						continue;
+					if(!json_is_string(value))
+						continue;
+					char *s = strdup(json_string_value(value));
+					if (!s)
+						continue;
+					parse_arg(options[k].val, s, pname);
+					free(s);
+				}
+			}
+		}
+		else
+		{
+			fprintf(stderr, "%s: invalid argument for option '%s'\n",
+				pname, options[i].name);
+			exit(1);
+		}
+	}
+}
+
 static void parse_cmdline(int argc, char *argv[])
 {
 	int key;
@@ -1825,13 +1906,15 @@ static void parse_cmdline(int argc, char *argv[])
 		if (key < 0)
 			break;
 
-		parse_arg(key, optarg);
+		parse_arg(key, optarg, argv[0]);
 	}
 	if (optind < argc) {
 		fprintf(stderr, "%s: unsupported non-option argument '%s'\n",
 			argv[0], argv[optind]);
 		show_usage_and_exit(1);
 	}
+	
+	parse_config(argv[0]);
 }
 
 static void clean_up()
