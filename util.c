@@ -152,7 +152,7 @@ void applog(int prio, const char *fmt, ...)
 	{
 		pthread_mutex_lock(&applog_lock);
 		FILE *fp; 
-		fp = fopen(LOG_NAME, "a");
+		fp = fopen(log_path, "a");
 		vfprintf(fp, f, ap);
 		fflush(fp);
 		fclose(fp);

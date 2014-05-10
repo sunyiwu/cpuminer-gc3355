@@ -118,6 +118,7 @@ static struct gc3355_dev *gc3355_devs;
 static struct gc3355_devices *device_list;
 static unsigned int gc3355_time_start;
 static json_t *opt_config;
+char *log_path;
 bool opt_refresh = false;
 bool opt_log = false;
 bool opt_curses = true;
@@ -182,7 +183,7 @@ Options:\n\
   -w, --no-refresh   									only send new work when a new block is detected\n\
   -a, --api-port=PORT  									set the JSON API port (default: 4028)\n\
   -t, --text											disable curses tui, output text\n\
-  -L, --log												file logging\n\
+  -L, --log=PATH										file logging\n\
   -o, --url=URL         								URL of mining server (default: " DEF_RPC_URL ")\n\
   -O, --userpass=U:P    								username:password pair for mining server\n\
   -u, --user=USERNAME   								username for mining server\n\
@@ -215,7 +216,7 @@ static struct option const options[] = {
 	{ "no-refresh", 0, NULL, 'w' },
 	{ "api-port", 1, NULL, 'a' },
 	{ "text", 0, NULL, 't' },
-	{ "log", 0, NULL, 'L' },
+	{ "log", 1, NULL, 'L' },
 	{ "debug", 0, NULL, 'D' },
 	{ "pass", 1, NULL, 'p' },
 	{ "quiet", 0, NULL, 'q' },
@@ -378,7 +379,6 @@ static void add_pool(struct pool_details *pools, struct pool_details *pool)
 		pool->active = true;
 		pool->tried = true;
 	}
-	//applog(LOG_INFO, "add pool %d url %s %x", pool->prio, pool->rpc_url, pool);
 	list_add_tail(&pool->list, &pools->list);
 	gpool = NULL;
 }
@@ -392,7 +392,6 @@ static void set_active_pool(struct pool_details *pools, struct pool_details *act
 	}
 	active_pool->active = active;
 	active_pool->tried = true;
-	//applog(LOG_INFO, "pool %d %x is %s", active_pool->prio, active_pool, active ? "active" : "inactive");
 }
 
 static struct pool_details* get_active_pool(struct pool_details *pools)
@@ -403,7 +402,6 @@ static struct pool_details* get_active_pool(struct pool_details *pools)
 		if(pool->usable && pool->active)
 		{
 			ret = pool;
-			//applog(LOG_INFO, "got active pool %d %x", pool->prio, pool);
 			break;
 		}
 	}
@@ -1758,7 +1756,8 @@ static void parse_arg (int key, char *arg, char *pname)
 		break;
 	case 'L':
 		opt_log = true;
-		FILE* fp = fopen(LOG_NAME, "w+");
+		log_path = strdup(arg);
+		FILE* fp = fopen(log_path, "w+");
 		fclose(fp);
 		break;
 	case 'q':
