@@ -1863,25 +1863,50 @@ static void parse_config(char *pname)
 			parse_arg(options[i].val, "", pname);
 		else if(json_is_array(val))
 		{
-			for(j = 0; j < json_array_size(val); j++)
+			if(options[i].val == '\0')
 			{
-				json_t *obj, *value;
-				obj = json_array_get(val, j);
-				for (k = 0; k < ARRAY_SIZE(options); k++)
+				for(j = 0; j < json_array_size(val); j++)
 				{
-					if (!options[k].name)
-						break;
-					value = json_object_get(obj, options[k].name);
-					if (!value)
-						continue;
-					if(!json_is_string(value))
-						continue;
-					char *s = strdup(json_string_value(value));
-					if (!s)
-						continue;
-					parse_arg(options[k].val, s, pname);
-					free(s);
+					json_t *obj, *value;
+					obj = json_array_get(val, j);
+					for (k = 0; k < ARRAY_SIZE(options); k++)
+					{
+						if (!options[k].name)
+							break;
+						value = json_object_get(obj, options[k].name);
+						if(!value || !json_is_string(value))
+							continue;
+						char *s = strdup(json_string_value(value));
+						if (!s)
+							continue;
+						parse_arg(options[k].val, s, pname);
+						free(s);
+					}
 				}
+			}
+			else
+			{
+				char *s;
+				const char *bit;
+				int len;
+				json_t *value = json_array_get(val, 0);
+				if(!value || !json_is_string(value))
+					continue;
+				bit = json_string_value(value);
+				s = strdup(bit);
+				len = strlen(bit) + 1;
+				for(j = 1; j < json_array_size(val); j++)
+				{
+					value = json_array_get(val, j);
+					if(!value || !json_is_string(value))
+						continue;
+					bit = json_string_value(value);
+					len += strlen(bit) + 1;
+					s = realloc(s, len);
+					strncat(strncat(s, ",", len), bit, len);
+				}
+				parse_arg(options[i].val, s, pname);
+				free(s);
 			}
 		}
 		else
