@@ -15,11 +15,7 @@ cd cpuminer-gc3355
 make
 ```
 
-Failover pool strategy is supported.
-`--url=stratum+tcp://pool1:port --userpass=user1:pass1 --url=stratum+tcp://pool2:port --userpass=user2:pass2 --url=stratum+tcp://pool3:port --userpass=user3:pass3`
-Pool 1 is the main pool, if it is down, it will try to connect to the backup pool(s) and query the main pool until it is back up and switch pools automatically.
-
-Special option: `--no-refresh` - only send new work to the GC3355 when a new block is detected (default: always send new work GC3355)
+Failover pool strategy is supported (see config). The first pool specified is the main pool.
 
 GC3355-specific options:
 
@@ -34,50 +30,72 @@ GC3355-specific options:
 ```
 
 If you cannot find any /dev/ttyUSB or /dev/ttyACM, it related to running cgminer, this can easily be fixed by rebooting the system.
+
 You do not need the set the # of chips for USB Miner or G-Blade, it is detected automatically
-Example with per chip tuned frequency setting, USB miner (ttyACM0) and G-Blade (ttyACM1, ttyACM2):
+
+For the G-Blade, no additional command line parameters are needed, it will be detected automatically.
+You can only set the frequency of chip_id 0-7, each chip_id represents 5 chips in this case.
+You cannot set the frequency of an individual chip on your G-Blade.
+
+Config
+==============
+
+Use JSON config with `-c name_of_config`
+
+Example JSON Config:
 
 ```
-./minerd --gc3355-detect --freq=850 --gc3355-freq=/dev/ttyACM0:900,/dev/ttyACM0:875:1,/dev/ttyACM0:875:2,/dev/ttyACM1:825,/dev/ttyACM1:1025:32,/dev/ttyACM2:825,/dev/ttyACM2:850:10
-```
-
-The syntax is:
-```
---gc3355-freq=DEV0:F0:CHIP0,...,DEVn:Fn:CHIPn
-where n = 0,1,...,chip_count-1
-USB miner -> chip_count = 5
-G-Blade -> chip_count = 40
-```
-
-Example script with backup pools for *nix:
-
-```
-./minerd --gc3355-detect --gc3355-freq=/dev/ttyACM0:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool1:port --userpass=user1:pass1 --url=stratum+tcp://pool2:port --userpass=user2:pass2
-```
-
-Example script with backup pools for Windows:
-
-```
-minerd.exe --gc3355=\\.\COM1,\\.\COM2,\\.\COM3 --gc3355-freq=\\.\COM1:800 --gc3355-autotune --freq=850 --url=stratum+tcp://pool1:port --userpass=user1:pass1 --url=stratum+tcp://pool2:port --userpass=user2:pass2
-pause
+{
+	"gc3355" : [
+		"\\\\.\\COM3",
+		"\\\\.\\COM4",
+		"\\\\.\\COM5"
+	],
+	"gc3355-freq" : [
+		"\\\\.\\COM3:850", "\\\\.\\COM3:875:0", "\\\\.\\COM3:900:3",
+		"\\\\.\\COM4:900",
+		"\\\\.\\COM5:875"
+	],
+	"gc3355-autotune" : true,
+	"pools" : [
+		{
+			"url" : "stratum+tcp://eu.wafflepool.com:3333",
+			"user" : "1AMsjqzXQpRunxUmtn3xzQ5cMdhV7fmet2",
+			"pass" : "x"
+		},
+		{
+			"url" : "stratum+tcp://doge.ghash.io:3333",
+			"user" : "user",
+			"pass" : "x"
+		}
+	],
+	"freq" : "850",
+	"debug" : true
+}
 ```
 
 API
 ==============
 The API is accessible on port 4028 (by default), to change the port pass --api-port=PORT
+
 One GET command is currently supported:
 ```
 {"get":"stats"}\n
 ```
 This will output a JSON encoded array with mining stats for each GC3355 chip.
+
 One SET command is currently supported:
 ```
 {"set":"frequency", "devices":{"ttyACM0":{"chips":[825,850,875,900,850]}}}\n
 ```
 This will set the frequency on the fly of the GC3355 chips to 825MHz (chip0), 850MHz (chip1), 875MHz (chip2), 900MHz (chip3), 850MHz (chip4)
+
 You can specify multiple devices, but the length of the chips array must be equal to the number of chips on the GC3355 miners, Blades have 40 chips but you can only address chip0-7 (clusters of 5 chips), so the max is 8.
+
 To translate the JSON keys, please refer to cpu-miner.c:66
+
 Do not forget the newline (\n), it is used to tell the API to stop reading and execute the command!
+
 Windows is not supported.
 
 Binaries
