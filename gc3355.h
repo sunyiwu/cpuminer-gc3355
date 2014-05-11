@@ -618,7 +618,7 @@ static void *gc3355_thread(void *userdata)
 		if (have_stratum)
 		{
 			while (can_start < opt_n_threads || !can_work || g_works[thr_id].job_id == NULL || time(NULL) >= g_work_time + 120)
-			usleep(100000);
+			usleep(10000);
 		}
 		if (work_restart[thr_id].restart || strcmp(work.job_id, g_works[thr_id].job_id))
 		{
@@ -633,7 +633,7 @@ static void *gc3355_thread(void *userdata)
 			free(work.job_id);
 			work.job_id = strdup(g_works[thr_id].job_id);
 			work.work_id = g_works[thr_id].work_id;
-			for(i = 0; i < 4; i++)
+			for(i = 0; i < stratum->xnonce2_size; i++)
 				work.xnonce2[i] = g_works[thr_id].xnonce2[i];
 			pthread_mutex_unlock(&g_work_lock);
 			sha256_init(midstate);

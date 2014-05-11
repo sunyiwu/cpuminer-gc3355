@@ -43,7 +43,7 @@
 #define PROGRAM_NAME		"minerd"
 #define DEF_RPC_URL		"http://127.0.0.1:9332/"
 
-#define MINER_VERSION	"v1.0a"
+#define MINER_VERSION	"v1.0b"
 
 enum workio_commands {
 	WC_SUBMIT_WORK,
@@ -104,6 +104,7 @@ struct gc3355_dev {
 	double *hashrate;
 	unsigned long long *shares;
 	unsigned int *last_share;
+	unsigned short errors;
 	bool ready;
 };
 
@@ -237,7 +238,7 @@ struct work {
 	uint32_t *target;
 	char *job_id;
 	uint32_t work_id;
-	unsigned char xnonce2[4];
+	unsigned char xnonce2[8];
 	unsigned short thr_id;
 };
 
@@ -945,7 +946,7 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 		le32enc(&nonce, work->data[19]);
 		ntimestr = bin2hex((const unsigned char *)(&ntime), 4);
 		noncestr = bin2hex((const unsigned char *)(&nonce), 4);
-		xnonce2str = bin2hex(work->xnonce2, 4);
+		xnonce2str = bin2hex(work->xnonce2, stratum->xnonce2_size);
 		pthread_mutex_lock(&work_items_lock);
 		id = push_work_item(work_items, work);
 		pthread_mutex_unlock(&work_items_lock);
@@ -1128,34 +1129,39 @@ static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 {
 	unsigned char merkle_root[64];
 	int i;
+	unsigned char xnonce2s[sctx->xnonce2_size];
+	unsigned char *coinbase;
+	bool xclear = true;
 
 	work->job_id = g_curr_job_id;
 	
-	uint32_t xnonce2;
-	if(!memcmp(work->xnonce2, "\x00\x00\x00\x00", 4))
+	uint32_t xbase = (16 << (8 * sctx->xnonce2_size - 4)) - 1;
+	uint32_t xnonce2 = 0;
+	for(i = 0; i < sctx->xnonce2_size; i++)
 	{
-		xnonce2 = 0xffffffff / (work->thr_id + 2);
+		if(work->xnonce2[i])
+		{
+			xclear = false;
+			break;
+		}
 	}
+	if(xclear)
+		xnonce2 = xbase / (work->thr_id + 2);
 	else
 	{
-		xnonce2 = (uint32_t)(work->xnonce2[0]) << 24 |
-			(uint32_t)(work->xnonce2[1]) << 16 |
-			(uint32_t)(work->xnonce2[2]) << 8  |
-			(uint32_t)(work->xnonce2[3]);
-		if(xnonce2 < (0xffffffff / (work->thr_id + 1)) - 1)
-		{
+		for(i = 0; i < sctx->xnonce2_size; i++)
+			xnonce2 |= work->xnonce2[i] << ((sctx->xnonce2_size - 1 - i) * 8);
+		if(xnonce2 < (xbase / (work->thr_id + 1)) - 1)
 			xnonce2++;
-		}
 		else
-		{
-			xnonce2 = 0xffffffff / (work->thr_id + 2);
-		}
+			xnonce2 = xbase / (work->thr_id + 2);
 	}
-	unsigned char *coinbase = malloc(sctx->job.coinbase_size);
+	for(i = 0; i < sctx->xnonce2_size; i++)
+		xnonce2s[i] = xnonce2 >> ((sctx->xnonce2_size - 1 - i) * 8);
+	coinbase = malloc(sctx->job.coinbase_size);
 	memcpy(coinbase, sctx->job.coinbase, sctx->job.coinbase_size);
-	unsigned char xnonce2s[4] = {xnonce2 >> 24, xnonce2 >> 16, xnonce2 >> 8, xnonce2};
-	memcpy(coinbase + (sctx->job.xnonce2 - sctx->job.coinbase), xnonce2s, 4);
-	memcpy(work->xnonce2, xnonce2s, 4);
+	memcpy(coinbase + (sctx->job.xnonce2 - sctx->job.coinbase), xnonce2s, sctx->xnonce2_size);
+	memcpy(work->xnonce2, xnonce2s, sctx->xnonce2_size);
 	
 	/* Generate merkle root */
 	sha256d(merkle_root, coinbase, sctx->job.coinbase_size);
@@ -1307,11 +1313,13 @@ login:
 				applog(LOG_ERR, "...retry after %d seconds", opt_fail_pause);
 				sleep(opt_fail_pause);
 			}
+			for(i = 0; i < opt_n_threads; i++)
+			{
+				memset(g_works[i].xnonce2, 0, 8);
+			}
 			if(g_work_update_time)
 			{
-				pthread_mutex_lock(&g_work_lock);
 				g_work_update_time = 0;
-				pthread_mutex_unlock(&g_work_lock);
 			}
 		}
 		can_work = true;
