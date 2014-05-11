@@ -362,6 +362,11 @@ static void gc3355_send_cmds(struct gc3355_dev *gc3355, const unsigned char *cmd
 static void gc3355_send_chip_cmds(struct gc3355_dev *gc3355, const unsigned char *cmds[], unsigned char chip_id)
 {
 	int i;
+	if(chip_id = 0xf)
+	{
+		gc3355_send_cmds(gc3355, cmds);
+		return;
+	}
 	for(i = 0; cmds[i] != NULL; i++)
 	{
 		int size = cmds[i][0];
@@ -472,18 +477,30 @@ static unsigned short prev_freq(struct gc3355_dev *gc3355, int chip_id)
 	return gc3355->freq[chip_id] - GC3355_OVERCLOCK_FREQ_STEP >= GC3355_MIN_FREQ ? gc3355->freq[chip_id] - GC3355_OVERCLOCK_FREQ_STEP : gc3355->freq[chip_id];
 }
 
-static void gc3355_reset_all(struct gc3355_dev *gc3355)
-{
-	gc3355_send_cmds(gc3355, single_cmd_reset);
-	applog(LOG_DEBUG, "%d: Resetting GC3355 chips", gc3355->id);
-	usleep(100000);
-}
-
 static void gc3355_reset_single(struct gc3355_dev *gc3355, unsigned char chip_id)
 {
+	if(gc3355->time_now != NULL && gc3355->time_now[0])
+	{
+		struct timeval timestr;
+		double time_now;
+		gettimeofday(&timestr, NULL);
+		time_now = timestr.tv_sec + timestr.tv_usec / 1000000.0;
+		if(time_now - gc3355->time_now[0] < 0.1)
+		{
+			usleep(1000000 * (0.1 - time_now + gc3355->time_now[0]));
+		}
+	}
+	if(chip_id == 0xf)
+		applog(LOG_DEBUG, "%d: Resetting GC3355 chips", gc3355->id);
+	else
+		applog(LOG_DEBUG, "%d: Resetting GC3355 chip #%d", gc3355->id, chip_id);
 	gc3355_send_chip_cmds(gc3355, single_cmd_reset, chip_id);
-	applog(LOG_DEBUG, "%d: Resetting GC3355 chip #%d", gc3355->id, chip_id);
-	usleep(100000);
+	usleep(90000);
+}
+
+static void gc3355_reset_all(struct gc3355_dev *gc3355)
+{
+	gc3355_reset_single(gc3355, 0xf);
 }
 
 /*
