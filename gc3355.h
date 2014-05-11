@@ -476,12 +476,14 @@ static void gc3355_reset_all(struct gc3355_dev *gc3355)
 {
 	gc3355_send_cmds(gc3355, single_cmd_reset);
 	applog(LOG_DEBUG, "%d: Resetting GC3355 chips", gc3355->id);
+	usleep(100000);
 }
 
 static void gc3355_reset_single(struct gc3355_dev *gc3355, unsigned char chip_id)
 {
 	gc3355_send_chip_cmds(gc3355, single_cmd_reset, chip_id);
 	applog(LOG_DEBUG, "%d: Resetting GC3355 chip #%d", gc3355->id, chip_id);
+	usleep(100000);
 }
 
 /*
@@ -737,13 +739,6 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 		memcpy(bin+68, (unsigned char *)data2, 80);
 		memcpy(bin+148, "\xff\xff\xff\xff", 4);
 		memcpy(bin+152, (unsigned char[]){work->work_id >> 24, work->work_id >> 16, work->work_id >> 8, work->work_id}, 4);
-		// clear read buffer
-		do
-		{
-			unsigned char buf[1];
-			ret = read(gc3355->dev_fd, buf, 1);
-		}
-		while(ret);
 		gc3355_write(gc3355, bin, 156);
 		gc3355->resend = false;
 		gettimeofday(&timestr, NULL);
