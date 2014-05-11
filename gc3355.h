@@ -495,7 +495,7 @@ static void gc3355_reset_single(struct gc3355_dev *gc3355, unsigned char chip_id
 	else
 		applog(LOG_DEBUG, "%d: Resetting GC3355 chip #%d", gc3355->id, chip_id);
 	gc3355_send_chip_cmds(gc3355, single_cmd_reset, chip_id);
-	usleep(90000);
+	usleep(70000);
 }
 
 static void gc3355_reset_all(struct gc3355_dev *gc3355)
