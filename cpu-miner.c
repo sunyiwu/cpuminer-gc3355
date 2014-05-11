@@ -960,11 +960,6 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 		if (unlikely(!stratum_send_line(stratum, s))) {
 			applog(LOG_ERR, "submit_upstream_work stratum_send_line failed");
 			can_work = false;
-			struct work_items *work_item = pop_work_item(work_items, id);
-			if(work_item != NULL)
-				free(work_item);
-			else
-				applog(LOG_ERR, "Invalid work_id: %x", id);
 			goto out;
 		}
 		can_work = true;
@@ -1212,8 +1207,11 @@ static bool stratum_handle_response(char *buf)
 	}
 
 	uint32_t res_id = (uint32_t) json_integer_value(id_val);
-	share_result(json_is_true(res_val),
-		err_val ? json_string_value(json_array_get(err_val, 1)) : NULL, res_id);
+	if(res_id)
+	{
+		share_result(json_is_true(res_val),
+			err_val ? json_string_value(json_array_get(err_val, 1)) : NULL, res_id);
+	}
 
 	ret = true;
 out:
