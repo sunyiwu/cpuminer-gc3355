@@ -1307,6 +1307,12 @@ login:
 				applog(LOG_ERR, "...retry after %d seconds", opt_fail_pause);
 				sleep(opt_fail_pause);
 			}
+			if(g_work_update_time)
+			{
+				pthread_mutex_lock(&g_work_lock);
+				g_work_update_time = 0;
+				pthread_mutex_unlock(&g_work_lock);
+			}
 		}
 		can_work = true;
 		restarted = 0;
