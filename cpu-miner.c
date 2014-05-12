@@ -1388,6 +1388,7 @@ login:
 				gettimeofday(&timestr, NULL);
 				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | (timestr.tv_usec & 0xffff);
 				stratum->job.diff = stratum->next_diff;
+				applog(LOG_INFO, "Diff: %d Work_id: %08x", (int) (stratum->job.diff), g_curr_work_id);
 				diff_to_target(g_curr_target, stratum->job.diff / 65536.0);
 				time(&g_work_update_time);
 				time(&g_work_time);

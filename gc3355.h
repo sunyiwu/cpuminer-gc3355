@@ -639,7 +639,7 @@ static void *gc3355_thread(void *userdata)
 			while (can_start < opt_n_threads || !can_work || g_works[thr_id].job_id == NULL || time(NULL) >= g_work_time + 120)
 			usleep(10000);
 		}
-		if (work_restart[thr_id].restart || strcmp(work.job_id, g_works[thr_id].job_id))
+		if (work_restart[thr_id].restart || strcmp(work.job_id, g_works[thr_id].job_id) || work.work_id != g_works[thr_id].work_id)
 		{
 			gc3355_reset_all(gc3355);
 			pthread_mutex_lock(&g_work_lock);
