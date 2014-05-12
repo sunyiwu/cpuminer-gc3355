@@ -518,7 +518,6 @@ static void *gc3355_thread(void *userdata)
 	struct dev_freq *dev_freq_curr;
 	struct chip_freq *chip_freq_curr;
 	
-	work.job_id = malloc(1);
 	work.thr_id = thr_id;
 	gettimeofday(&timestr, NULL);
 	gc3355 = &gc3355_devs[thr_id];
@@ -636,24 +635,16 @@ static void *gc3355_thread(void *userdata)
 	{
 		if (have_stratum)
 		{
-			while (can_start < opt_n_threads || !can_work || g_works[thr_id].job_id == NULL || time(NULL) >= g_work_time + 120)
+			while (can_start < opt_n_threads || !can_work || g_work.job_id == NULL || time(NULL) >= g_work_time + 120)
 			usleep(10000);
 		}
-		if (work_restart[thr_id].restart || strcmp(work.job_id, g_works[thr_id].job_id) || work.work_id != g_works[thr_id].work_id)
+		if (work_restart[thr_id].restart || strcmp(work.job_id, g_work.job_id) || work.work_id != g_work.work_id)
 		{
 			gc3355_reset_all(gc3355);
 			pthread_mutex_lock(&g_work_lock);
 			pthread_mutex_lock(&stratum->work_lock);
-			stratum_gen_work(stratum, &g_works[thr_id]);
+			stratum_gen_work(stratum, &work);
 			pthread_mutex_unlock(&stratum->work_lock);
-			for(i = 0; i < 32; i++)
-				work.data[i] = g_works[thr_id].data[i];
-			work.target = g_works[thr_id].target;
-			free(work.job_id);
-			work.job_id = strdup(g_works[thr_id].job_id);
-			work.work_id = g_works[thr_id].work_id;
-			for(i = 0; i < stratum->xnonce2_size; i++)
-				work.xnonce2[i] = g_works[thr_id].xnonce2[i];
 			pthread_mutex_unlock(&g_work_lock);
 			sha256_init(midstate);
 			sha256_transform(midstate, work.data, 0);
@@ -795,9 +786,9 @@ static int gc3355_scanhash(struct gc3355_dev *gc3355, struct work *work, unsigne
 				
 			stop = 1;
 			chip_id = nonce / (0xffffffff / gc3355->chips);
-			if(work_id != g_curr_work_id)
+			if(work_id != g_work.work_id)
 			{
-				applog(LOG_DEBUG, "%d@%d: Work_id differs (%08x != %08x)", gc3355->id, chip_id, work_id, g_curr_work_id);
+				applog(LOG_DEBUG, "%d@%d: Work_id differs (%08x != %08x)", gc3355->id, chip_id, work_id, g_work.work_id);
 				continue;
 			}
 			if(work_restart[thr_id].restart || !can_work)

@@ -235,8 +235,8 @@ static struct option const options[] = {
 
 struct work {
 	uint32_t data[32];
-	uint32_t *target;
-	char *job_id;
+	uint32_t target[8];
+	char job_id[128];
 	uint32_t work_id;
 	unsigned char xnonce2[8];
 	unsigned short thr_id;
@@ -251,15 +251,9 @@ struct work_items
 	uint16_t id;
 };
 
-static uint32_t g_prev_target[8];
-static uint32_t g_curr_target[8];
-static char g_prev_job_id[128];
-static char g_curr_job_id[128];
-static uint32_t g_prev_work_id = 0;
-static uint32_t g_curr_work_id = 0;
 static bool can_work = false;
 
-static struct work *g_works;
+static struct work g_work;
 static time_t g_work_time;
 static time_t g_work_update_time;
 static pthread_mutex_t g_work_lock;
@@ -1019,7 +1013,6 @@ static void workio_cmd_free(struct workio_cmd *wc)
 
 	switch (wc->cmd) {
 	case WC_SUBMIT_WORK:
-		free(wc->u.work->job_id);
 		free(wc->u.work);
 		break;
 	default: /* do nothing */
@@ -1107,7 +1100,6 @@ static bool submit_work(struct thr_info *thr, const struct work *work_in)
 	wc->cmd = WC_SUBMIT_WORK;
 	wc->thr = thr;
 	memcpy(wc->u.work, work_in, sizeof(*work_in));
-	wc->u.work->job_id = strdup(wc->u.work->job_id);
 
 	/* send solution to workio thread */
 	if (!tq_push(thr_info[work_thr_id].q, wc))
@@ -1128,7 +1120,7 @@ static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 	unsigned char *coinbase;
 	bool xclear = true;
 
-	work->job_id = g_curr_job_id;
+	strcpy(work->job_id, g_work.job_id);
 	
 	uint32_t xbase = (16 << (8 * sctx->xnonce2_size - 4)) - 1;
 	uint32_t xnonce2 = 0;
@@ -1178,8 +1170,9 @@ static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 	work->data[20] = 0x80000000;
 	work->data[31] = 0x00000280;
 	
-	work->target = g_curr_target;
-	work->work_id = g_curr_work_id;
+	for(i = 0; i < 8; i++)
+		work->target[i] = g_work.target[i];
+	work->work_id = g_work.work_id;
 	
 	free(coinbase);
 }
@@ -1237,18 +1230,12 @@ static void *stratum_thread(void *userdata)
 	struct timeval timestr;
 	static struct pool_details *pool, *main_pool;
 	bool switch_lock = false, switched = false, reconnect = false;
-	
-	g_works = calloc(opt_n_threads, sizeof(struct work));
-	for(i = 0; i < opt_n_threads; i++)
-	{
-		g_works[i].thr_id = i;
-	}
+	uint32_t work_id;
+
 	gettimeofday(&timestr, NULL);
-	g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | (timestr.tv_usec & 0xffff);
-	pthread_mutex_lock(&g_work_lock);
+	work_id = (timestr.tv_sec & 0xffff) << 16 | (timestr.tv_usec & 0xffff);
 	g_work_time = 0;
 	g_work_update_time = 0;
-	pthread_mutex_unlock(&g_work_lock);
 	
 	while (1) {
 
@@ -1311,10 +1298,7 @@ login:
 				applog(LOG_ERR, "...retry after %d seconds", opt_fail_pause);
 				sleep(opt_fail_pause);
 			}
-			for(i = 0; i < opt_n_threads; i++)
-			{
-				memset(g_works[i].xnonce2, 0, 8);
-			}
+			memset(g_work.xnonce2, 0, 8);
 			if(g_work_update_time)
 			{
 				g_work_update_time = 0;
@@ -1323,31 +1307,23 @@ login:
 		can_work = true;
 		restarted = 0;
 		if (stratum->job.job_id &&
-		    (strcmp(stratum->job.job_id, g_curr_job_id) || !g_work_time)) {
+		    (strcmp(stratum->job.job_id, g_work.job_id) || !g_work_time)) {
 			pthread_mutex_lock(&g_work_lock);
 			pthread_mutex_lock(&stratum->work_lock);
-			g_prev_work_id = g_curr_work_id;
 			if (stratum->job.clean || time(NULL) >= g_work_update_time + 60)
 			{
 				restart_threads();
 				if(stratum->job.clean)
 					applog(LOG_INFO, "Stratum detected new block");
 				gettimeofday(&timestr, NULL);
-				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | (timestr.tv_usec & 0xffff);
+				work_id = (timestr.tv_sec & 0xffff) << 16 | (timestr.tv_usec & 0xffff);
 				restarted = 1;
 				time(&g_work_update_time);
 			}
-			applog(LOG_INFO, "New Job_id: %s Diff: %d Work_id: %08x", stratum->job.job_id, (int) (stratum->job.diff), g_curr_work_id);
-			strcpy(g_prev_job_id, g_curr_job_id);
-			for(i = 0; i < 8; i++) g_prev_target[i] = g_curr_target[i];
-			for(i = 0; i < opt_n_threads; i++)
-			{
-				g_works[i].job_id = g_prev_job_id;
-				g_works[i].target = g_prev_target;
-				g_works[i].work_id = g_prev_work_id;
-			}
-			strcpy(g_curr_job_id, stratum->job.job_id);
-			diff_to_target(g_curr_target, stratum->job.diff / 65536.0);
+			applog(LOG_INFO, "New Job_id: %s Diff: %d Work_id: %08x", stratum->job.job_id, (int) (stratum->job.diff), work_id);
+			strcpy(g_work.job_id, stratum->job.job_id);
+			diff_to_target(g_work.target, stratum->job.diff / 65536.0);
+			g_work.work_id = work_id;
 			time(&g_work_time);
 			pthread_mutex_unlock(&stratum->work_lock);
 			pthread_mutex_unlock(&g_work_lock);
@@ -1378,18 +1354,12 @@ login:
 				pthread_mutex_lock(&stratum->work_lock);
 				restart_threads();
 				applog(LOG_INFO, "Stratum difficulty changed");
-				for(i = 0; i < 8; i++) g_prev_target[i] = g_curr_target[i];
-				g_prev_work_id = g_curr_work_id;
-				for(i = 0; i < opt_n_threads; i++)
-				{
-					g_works[i].target = g_prev_target;
-					g_works[i].work_id = g_prev_work_id;
-				}
 				gettimeofday(&timestr, NULL);
-				g_curr_work_id = (timestr.tv_sec & 0xffff) << 16 | (timestr.tv_usec & 0xffff);
+				work_id = (timestr.tv_sec & 0xffff) << 16 | (timestr.tv_usec & 0xffff);
 				stratum->job.diff = stratum->next_diff;
-				applog(LOG_INFO, "Diff: %d Work_id: %08x", (int) (stratum->job.diff), g_curr_work_id);
-				diff_to_target(g_curr_target, stratum->job.diff / 65536.0);
+				applog(LOG_INFO, "Diff: %d Work_id: %08x", (int) (stratum->job.diff), work_id);
+				diff_to_target(g_work.target, stratum->job.diff / 65536.0);
+				g_work.work_id = work_id;
 				time(&g_work_update_time);
 				time(&g_work_time);
 				pthread_mutex_unlock(&stratum->work_lock);
@@ -1404,8 +1374,6 @@ login:
 			usleep(1000);
 		}
 	}
-	
-	free(g_works);
 
 out:
 	return NULL;
