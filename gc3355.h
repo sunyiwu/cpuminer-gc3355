@@ -400,7 +400,7 @@ static uint32_t gc3355_get_firmware_version(struct gc3355_dev *gc3355)
 	return fw_version;
 }
 
-static void gc3355_set_core_freq(struct gc3355_dev *gc3355, const short chip_id, unsigned short freq)
+static void gc3355_set_core_freq(struct gc3355_dev *gc3355, const unsigned short chip_id, unsigned short freq)
 {
 	// See https://github.com/gridseed/gc3355-doc/blob/master/GC3355_Register_Spec.pdf
 	int i;
@@ -440,17 +440,23 @@ static void gc3355_set_core_freq(struct gc3355_dev *gc3355, const short chip_id,
 	cfg = (pll_bypass << 31) | (pll_bandselect << 30) | (pll_outdiv << 28) | (pll_F << 21) | (pll_R << 16) | (core_clk_out1_diven << 6) | (core_clk_sel1 << 5) | (core_clk_sel0 << 4) | (pll_clk_gate << 3) | (pll_recfg << 2) | (cfg_cpm << 0);
 	buf[0] = 0x55;
 	buf[1] = 0xaa;
-	buf[2] = 0xe0 + (chip_id == -1 ? 0xf : chip_id % GC3355_MAX_CHIPS);
+	buf[2] = 0xe0 + (chip_id == 0xf ? 0xf : chip_id % GC3355_MAX_CHIPS);
 	buf[3] = 0;
 	buf[4] = cfg & 0xff;
 	buf[5] = (cfg >> 8) & 0xff;
 	buf[6] = (cfg >> 16) & 0xff;
 	buf[7] = (cfg >> 24) & 0xff;
 	gc3355_write(gc3355, buf, 8);
-	if(chip_id >= 0)
+	if(chip_id < GC3355_MAX_CHIPS)
 	{
-		gc3355->freq[chip_id] = freq;
-		applog(LOG_INFO, "%d@%d: Set GC3355 core frequency to %dMhz", gc3355->id, chip_id, gc3355->freq[chip_id]);
+		for(i = 0; i < gc3355->chips; i++)
+		{
+			if((i - chip_id) >= 0 && !((i - chip_id) % GC3355_MAX_CHIPS))
+			{
+				gc3355->freq[i] = freq;
+				applog(LOG_INFO, "%d@%d: Set GC3355 core frequency to %dMhz", gc3355->id, i, gc3355->freq[i]);
+			}
+		}
 	}
 	else
 	{
@@ -604,7 +610,8 @@ static void *gc3355_thread(void *userdata)
 	
 	for(i = 0; i < gc3355->chips; i++)
 	{
-		if(i == GC3355_MAX_CHIPS) break;
+		if(i == GC3355_MAX_CHIPS)
+			break;
 		gc3355_set_core_freq(gc3355, i, gc3355->freq[i]);
 	}
 	rc = 0;
