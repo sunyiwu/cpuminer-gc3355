@@ -604,7 +604,7 @@ static void *gc3355_thread(void *userdata)
 	}
 	for(dev_freq_curr = dev_freq_root; dev_freq_curr != NULL; dev_freq_curr = dev_freq_curr->next)
 	{
-		if(dev_freq_curr->devname != NULL && !strcmp(gc3355->devname, dev_freq_curr->devname))
+		if(dev_freq_curr->devname != NULL && (!strcmp(gc3355->devname, dev_freq_curr->devname) || (gc3355->serial != NULL && !strcmp(gc3355->serial, dev_freq_curr->devname))))
 		{
 			for(chip_freq_curr = dev_freq_curr->chips; chip_freq_curr != NULL; chip_freq_curr = chip_freq_curr->next)
 			{
