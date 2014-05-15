@@ -483,6 +483,17 @@ static unsigned short prev_freq(struct gc3355_dev *gc3355, int chip_id)
 	return gc3355->freq[chip_id] - GC3355_OVERCLOCK_FREQ_STEP >= GC3355_MIN_FREQ ? gc3355->freq[chip_id] - GC3355_OVERCLOCK_FREQ_STEP : gc3355->freq[chip_id];
 }
 
+static bool is_global_freq(struct gc3355_dev *gc3355)
+{
+	int i;
+	unsigned short freq = gc3355->freq[0];
+	for(i = 0; i < gc3355->chips; i++)
+	{
+		if(gc3355->freq[i] != freq) return false;
+	}
+	return true;
+}
+
 static void gc3355_reset_single(struct gc3355_dev *gc3355, unsigned char chip_id)
 {
 	if(gc3355->time_now != NULL && gc3355->time_now[0])
@@ -608,11 +619,18 @@ static void *gc3355_thread(void *userdata)
 		if(dev_freq_curr->next == NULL) break;
 	}
 	
-	for(i = 0; i < gc3355->chips; i++)
+	if(!is_global_freq(gc3355))
 	{
-		if(i == GC3355_MAX_CHIPS)
-			break;
-		gc3355_set_core_freq(gc3355, i, gc3355->freq[i]);
+		for(i = 0; i < gc3355->chips; i++)
+		{
+			if(i == GC3355_MAX_CHIPS)
+				break;
+			gc3355_set_core_freq(gc3355, i, gc3355->freq[i]);
+		}
+	}
+	else
+	{
+		gc3355_set_core_freq(gc3355, 0xf, gc3355->freq[0]);
 	}
 	rc = 0;
 	uint32_t midstate[8];
@@ -690,6 +708,7 @@ static void gc3355_restart(struct gc3355_dev *gc3355)
 		ret = read(gc3355->dev_fd, buf, 1);
 	}
 	while(ret);
+	bool is_global = is_global_freq(gc3355);
 	for(i = 0; i < gc3355->chips; i++)
 	{
 		gc3355->last_nonce[i] = 0;
@@ -701,8 +720,15 @@ static void gc3355_restart(struct gc3355_dev *gc3355)
 		gc3355->steps[i] = 0;
 		gc3355->hashrate[i] = 0;
 		gc3355->last_share[i] = timestr.tv_sec;
-		if(i < GC3355_MAX_CHIPS)
-			gc3355_set_core_freq(gc3355, i, gc3355->freq[i]);
+		if(!is_global)
+		{
+			if(i < GC3355_MAX_CHIPS)
+				gc3355_set_core_freq(gc3355, i, gc3355->freq[i]);
+		}
+	}
+	if(is_global)
+	{
+		gc3355_set_core_freq(gc3355, 0xf, gc3355->freq[0]);
 	}
 }
 
