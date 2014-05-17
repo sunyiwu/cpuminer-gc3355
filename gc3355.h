@@ -550,8 +550,7 @@ static void *gc3355_thread(void *userdata)
 		can_start++;
 		gc3355_exit(gc3355);
 	}
-	gc3355_send_cmds(gc3355, single_cmd_init);
-	gc3355_reset_all(gc3355);
+	gc3355_send_cmds(gc3355, gcp_cmd_reset);
 	sleep(1);
 	// clear read buffer
 	do
@@ -560,6 +559,8 @@ static void *gc3355_thread(void *userdata)
 		rc = read(gc3355->dev_fd, buf, 1);
 	}
 	while(rc);
+	gc3355_send_cmds(gc3355, single_cmd_init);
+	gc3355_reset_all(gc3355);
 	uint32_t fw_version = gc3355_get_firmware_version(gc3355);
 	applog(LOG_INFO, "%d: Firmware version: 0x%08x", thr_id, fw_version);
 	gc3355->chips = opt_gc3355_chips;
@@ -699,7 +700,7 @@ static void gc3355_restart(struct gc3355_dev *gc3355)
 	struct timeval timestr;
 	gettimeofday(&timestr, NULL);
 	applog(LOG_INFO, "%d: Restarting GC3355", gc3355->id);
-	gc3355_send_cmds(gc3355, single_cmd_init);
+	gc3355_send_cmds(gc3355, gcp_cmd_reset);
 	sleep(1);
 	// clear read buffer
 	do
@@ -708,6 +709,7 @@ static void gc3355_restart(struct gc3355_dev *gc3355)
 		ret = read(gc3355->dev_fd, buf, 1);
 	}
 	while(ret);
+	gc3355_send_cmds(gc3355, single_cmd_init);
 	bool is_global = is_global_freq(gc3355);
 	for(i = 0; i < gc3355->chips; i++)
 	{
