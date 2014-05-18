@@ -43,7 +43,7 @@
 #define PROGRAM_NAME		"minerd"
 #define DEF_RPC_URL		"http://127.0.0.1:9332/"
 
-#define MINER_VERSION	"v1.0b"
+#define MINER_VERSION	"v1.0c"
 
 enum workio_commands {
 	WC_SUBMIT_WORK,
@@ -1678,9 +1678,7 @@ static void parse_arg (int key, char *arg, char *pname)
 
 	switch(key) {
 	case 'd':
-#ifdef HAVE_UDEV
 		opt_gc3355_detect = true;
-#endif
 		break;
 	case 'G':
 		gc3355_devname = strdup(arg);
@@ -2016,10 +2014,8 @@ int main(int argc, char *argv[])
 
 	if(opt_gc3355_detect)
 	{
-#ifdef HAVE_UDEV
 		device_list = gc3355_get_device_list();
 		opt_n_threads = gc3355_get_device_count(device_list);
-#endif
 	}
 	else if (gc3355_devname != NULL)
 	{

@@ -10,7 +10,6 @@
  */
  
 #ifndef WIN32
-#define HAVE_UDEV
 #include <termios.h>
 #include <time.h>
 #include <sys/types.h>
@@ -23,6 +22,11 @@
 #include <libudev.h>
 #include "elist.h"
 #else
+#include <setupapi.h>
+#include <initguid.h>
+#if !defined(GUID_DEVINTERFACE_USB_DEVICE)
+const GUID GUID_DEVINTERFACE_USB_DEVICE = {0xA5DCBF10, 0x6530, 0x11D2, {0x90, 0x1F, 0x00, 0xC0, 0x4F, 0xB9, 0x51, 0xED}};
+#endif
 #define htobe16 htons
 #define htole16(x) (x)
 #define be16toh ntohs
@@ -112,7 +116,7 @@ struct gc3355_devices
 static uint16_t can_start = 0;
 static struct dev_freq *dev_freq_root;
 
-#ifndef WIN32
+#ifdef HAVE_LIBUDEV
 static struct gc3355_devices *gc3355_get_device_list()
 {
 	struct gc3355_devices *device_list, *device;
@@ -154,6 +158,71 @@ static struct gc3355_devices *gc3355_get_device_list()
 	udev_unref(udev);
 	return device_list;
 }
+#else
+static struct gc3355_devices *gc3355_get_device_list()
+{
+	struct gc3355_devices *device_list, *device;
+	HDEVINFO                         hDevInfo;
+	SP_DEVICE_INTERFACE_DATA         DevIntfData;
+	PSP_DEVICE_INTERFACE_DETAIL_DATA DevIntfDetailData;
+	SP_DEVINFO_DATA                  DevData;
+	DWORD dwSize, dwType, dwMemberIdx;
+	HKEY hKey;
+	BYTE lpData[1024];
+	device_list = calloc(1, sizeof(struct gc3355_devices));
+	INIT_LIST_HEAD(&device_list->list);
+	hDevInfo = SetupDiGetClassDevs(&GUID_DEVINTERFACE_USB_DEVICE, NULL, 0, DIGCF_DEVICEINTERFACE | DIGCF_PRESENT);
+	if (hDevInfo != INVALID_HANDLE_VALUE)
+	{
+		DevIntfData.cbSize = sizeof(SP_DEVICE_INTERFACE_DATA);
+		dwMemberIdx = 0;
+		SetupDiEnumDeviceInterfaces(hDevInfo, NULL, &GUID_DEVINTERFACE_USB_DEVICE, dwMemberIdx, &DevIntfData);
+
+		while(GetLastError() != ERROR_NO_MORE_ITEMS)
+		{
+			DevData.cbSize = sizeof(DevData);
+			SetupDiGetDeviceInterfaceDetail(hDevInfo, &DevIntfData, NULL, 0, &dwSize, NULL);
+			DevIntfDetailData = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwSize);
+			DevIntfDetailData->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA);
+			if (SetupDiGetDeviceInterfaceDetail(hDevInfo, &DevIntfData, DevIntfDetailData, dwSize, &dwSize, &DevData))
+			{
+				if (strstr(DevIntfDetailData->DevicePath, "vid_0483&pid_5740") != NULL || strstr(DevIntfDetailData->DevicePath, "vid_10c4&pid_ea60") != NULL)
+				{
+					hKey = SetupDiOpenDevRegKey(hDevInfo, &DevData, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
+					dwType = REG_SZ;
+					dwSize = sizeof(lpData);
+					RegQueryValueEx(hKey, "PortName", NULL, &dwType, lpData, &dwSize);
+					RegCloseKey(hKey);
+					char *serial, *devname, *tmp;
+					serial = strchr(DevIntfDetailData->DevicePath, '#');
+					if(serial == NULL)
+						continue;
+					serial = strchr(serial + 1, '#') + 1;
+					tmp = strchr(serial, '#');
+					*tmp = '\0';
+					tmp = serial;
+					while (*tmp != '\0')
+					{
+						*tmp = toupper(*tmp);
+						tmp++;
+					}
+					devname = malloc(strlen(lpData) + 5);
+					strcpy(devname, "\\\\.\\");
+					strcpy(devname + 4, lpData);
+					device = calloc(1, sizeof(struct gc3355_devices));
+					device->path = devname;
+					device->serial = strdup(serial);
+					list_add(&device->list, &device_list->list);
+				}
+			}
+			HeapFree(GetProcessHeap(), 0, DevIntfDetailData);
+			SetupDiEnumDeviceInterfaces(hDevInfo, NULL, &GUID_DEVINTERFACE_USB_DEVICE, ++dwMemberIdx, &DevIntfData);
+		}
+		SetupDiDestroyDeviceInfoList(hDevInfo);
+	}
+	return device_list;
+}
+#endif
 
 static int gc3355_get_device_count(struct gc3355_devices *device_list)
 {
@@ -182,7 +251,6 @@ static void gc3355_free_device(struct gc3355_devices *device)
 	free(device->serial);
 	free(device);
 }
-#endif
 
 /* external functions */
 extern void scrypt_1024_1_1_256(const uint32_t *input, uint32_t *output,
@@ -1041,12 +1109,10 @@ static int create_gc3355_miner_threads(struct thr_info *thr_info, int opt_n_thre
 		
 		if(opt_gc3355_detect)
 		{
-#ifdef HAVE_UDEV
 			struct gc3355_devices *device = gc3355_get_next_device(device_list);
 			gc3355_devs[i].devname = strdup(device->path);
 			gc3355_devs[i].serial = strdup(device->serial);
 			gc3355_free_device(device);
-#endif
 		}
 		else
 		{

@@ -131,6 +131,21 @@ AC_CHECK_HEADER([libudev.h],[
 	libudev=no
 ])
 
+AC_CHECK_HEADERS([setupapi.h initguid.h],[
+	setupapi=yes
+	SETUPAPI_LIBS=-lsetupapi
+	AC_DEFINE([HAVE_SETUPAPI], [1], [Defined to 1 if setupapi is wanted])
+], [
+	if test "x$setupapi" = "xyes"; then
+		AC_MSG_ERROR([setupapi not found])
+	fi
+	setupapi=no
+], [[
+	#ifdef HAVE_SETUPAPI_H
+	#include <setupapi.h>
+	#endif
+]])
+
 AM_CONDITIONAL([WANT_JANSSON], [test x$request_jansson = xtrue])
 AM_CONDITIONAL([HAVE_CURSES], [test x$curses = xyes])
 AM_CONDITIONAL([HAVE_WINDOWS], [test x$have_win32 = xtrue])
@@ -155,6 +170,7 @@ AC_SUBST(WS2_LIBS)
 AC_SUBST(NCURSES_LIBS)
 AC_SUBST(PDCURSES_LIBS)
 AC_SUBST(UDEV_LIBS)
+AC_SUBST(SETUPAPI_LIBS)
 
 AC_CONFIG_FILES([
 	Makefile
