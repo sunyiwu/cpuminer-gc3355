@@ -21,13 +21,23 @@ GC3355-specific options:
 
 ```
 --gc3355=DEV0,DEV1,...,DEVn      				enable GC3355 chip mining mode (default: no)
---gc3355-detect					      			automatically detect GC3355 miners (not for Windows) (default: no)
+--gc3355-detect					      			automatically detect GC3355 miners (default: no)
 --freq=FREQUENCY  								set GC3355 core frequency in NONE dual mode (default: 600)
 --gc3355-freq=DEV0:F0,DEV1:F1,...,DEVn:Fn		individual frequency setting
 --gc3355-freq=DEV0:F0:CHIP0,...,DEVn:Fn:CHIPn	individual per chip frequency setting
 --gc3355-autotune  								auto overclocking each GC3355 chip (default: no)
 --gc3355-timeout=N  							max. time in seconds after no share is submitted before restarting GC3355 (default: never)
 ```
+
+There are multiple ways to set the frequency.
+
+By device name:
+
+Linux: `--gc3355-freq=/dev/ttyACM0:850` Windows: `--gc3355-freq=\\.\COM3:850`
+
+By serial string:
+
+`--gc3355-freq=8D751F965355:850`
 
 If you cannot find any /dev/ttyUSB or /dev/ttyACM, it related to running cgminer, this can easily be fixed by rebooting the system.
 
@@ -46,11 +56,7 @@ Example JSON Config:
 
 ```
 {
-	"gc3355" : [
-		"\\\\.\\COM3",
-		"\\\\.\\COM4",
-		"\\\\.\\COM5"
-	],
+	"gc3355-detect" : true,
 	"gc3355-freq" : [
 		"\\\\.\\COM3:850", "\\\\.\\COM3:875:0", "\\\\.\\COM3:900:3",
 		"\\\\.\\COM4:900",
