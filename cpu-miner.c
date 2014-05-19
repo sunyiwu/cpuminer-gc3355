@@ -43,7 +43,7 @@
 #define PROGRAM_NAME		"minerd"
 #define DEF_RPC_URL		"http://127.0.0.1:9332/"
 
-#define MINER_VERSION	"v1.0c"
+#define MINER_VERSION	"v1.0d"
 
 enum workio_commands {
 	WC_SUBMIT_WORK,
@@ -1307,7 +1307,7 @@ login:
 		can_work = true;
 		restarted = 0;
 		if (stratum->job.job_id &&
-		    (strcmp(stratum->job.job_id, g_work.job_id) || !g_work_time)) {
+		    (strcmp(stratum->job.job_id, g_work.job_id) || !g_work_time || !g_work_update_time)) {
 			pthread_mutex_lock(&g_work_lock);
 			pthread_mutex_lock(&stratum->work_lock);
 			if (stratum->job.clean || time(NULL) >= g_work_update_time + 60)
