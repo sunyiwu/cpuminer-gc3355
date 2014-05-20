@@ -66,7 +66,6 @@ enum sha256_algos {
 #define API_DEFAULT_PORT 4028
 #define API_QUEUE 16
 #define API_GET_STATS "stats"
-#define API_SET_FREQUENCY "frequency"
 #define API_START_TIME "start_time"
 #define API_DEVICE_SERIAL "serial"
 #define API_DEVICES "devices"
@@ -79,6 +78,7 @@ enum sha256_algos {
 #define API_HASHRATE "hashrate"
 #define API_SHARES "shares"
 #define API_AUTOTUNE "autotune"
+#define API_POOL "pool"
 #define API_POOLS "pools"
 #define API_POOL_URL "url"
 #define API_POOL_USER "user"
@@ -390,6 +390,18 @@ static void add_pool(struct pool_details *pools, struct pool_details *pool)
 	gpool = NULL;
 }
 
+static int get_pool_count(struct pool_details *pools)
+{
+	struct pool_details *pool;
+	int count = 0;
+	pool = list_entry(&pools->list.prev, struct pool_details, list);
+	if(pool != NULL)
+	{
+		count = pool->prio + 1;
+	}
+	return count;
+}
+
 static void set_active_pool(struct pool_details *pools, struct pool_details *active_pool, bool active)
 {
 	struct pool_details *pool;
@@ -399,6 +411,20 @@ static void set_active_pool(struct pool_details *pools, struct pool_details *act
 	}
 	active_pool->active = active;
 	active_pool->tried = true;
+}
+
+static struct pool_details* get_pool(struct pool_details *pools, int prio)
+{
+	struct pool_details *pool, *ret = NULL;
+	list_for_each_entry(pool, &pools->list, list)
+	{
+		if(pool->prio == prio)
+		{
+			ret = pool;
+			break;
+		}
+	}
+	return ret;
 }
 
 static struct pool_details* get_active_pool(struct pool_details *pools)
@@ -418,14 +444,9 @@ static struct pool_details* get_active_pool(struct pool_details *pools)
 static struct pool_details* get_main_pool(struct pool_details *pools)
 {
 	struct pool_details *pool, *ret = NULL;
-	list_for_each_entry(pool, &pools->list, list)
-	{
-		if(pool->usable && pool->prio == 0)
-		{
-			ret = pool;
-			break;
-		}
-	}
+	pool = get_pool(pools, 0);
+	if(pool != NULL && pool->usable)
+		ret = pool;
 	return ret;
 }
 
@@ -1404,6 +1425,27 @@ out:
 	return NULL;
 }
 
+static void *switch_pool_handler(void *id)
+{
+	pthread_detach(pthread_self());
+	struct pool_details *pool;
+	int pool_id = *(int*)id;
+	free(id);
+	pthread_mutex_lock(&switch_pool_lock);
+	pthread_mutex_lock(&pool_lock);
+	pool = get_pool(pools, pool_id);
+	if(pool != NULL)
+	{
+		applog(LOG_DEBUG, "API: Switching to pool %d", pool_id);
+		clear_pool_tried(pools);
+		set_active_pool(pools, pool, true);
+		must_switch = true;
+	}
+	pthread_mutex_unlock(&pool_lock);
+	pthread_mutex_unlock(&switch_pool_lock);
+	return NULL;
+}
+
 static void *check_pool_thread()
 {
 	static struct pool_details *main_pool;
@@ -1509,13 +1551,15 @@ static bool api_parse_get(const char *api_get, json_t *obj, json_t *err)
 #ifndef WIN32
 static bool api_parse_set(const char *api_set, json_t *req, json_t *obj, json_t *err)
 {
-	json_t *dev, *devs, *chips, *chip;
+	json_t *dev, *devs, *chips, *chip, *jpool;
 	const char *devname;
 	char *path, *base;
-	int i, j;
+	int i, j, pool_id, pool_count, *id;
 	unsigned short freq;
 	void *iter;
-	if(!strcmp(api_set, API_SET_FREQUENCY))
+	struct pool_details *pool;
+	pthread_t switch_pool_thread;
+	if(!strcmp(api_set, API_FREQUENCY))
 	{
 		devs = json_object_get(req, API_DEVICES);
 		if (!devs || !json_is_object(devs))
@@ -1556,6 +1600,29 @@ static bool api_parse_set(const char *api_set, json_t *req, json_t *obj, json_t 
 		}
 		return true;
 	}
+	else if(!strcmp(api_set, API_POOL))
+	{
+		jpool = json_object_get(req, API_POOL);
+		if(!jpool || !json_is_integer(jpool))
+			return false;
+		pool_id = json_integer_value(jpool);
+		pthread_mutex_lock(&pool_lock);
+		pool_count = get_pool_count(pools);
+		pthread_mutex_unlock(&pool_lock);
+		if(pool_id < 0 || pool_id >= pool_count)
+		{
+			applog(LOG_ERR, "API: Pool_id out of bounds: 0 <= Pool_id < %d", pool_count);
+			return true;
+		}
+		id = malloc(sizeof(int));
+		*id = pool_id;
+        if(unlikely(pthread_create(&switch_pool_thread, NULL, switch_pool_handler, (void*)id)))
+        {
+            applog(LOG_ERR, "API: Could not create switch_pool thread");
+			free(id);
+        }
+		return true;
+	}
 	return false;
 }
 #endif
@@ -1565,6 +1632,7 @@ static void *api_request_handler(void *socket)
 {
 	pthread_detach(pthread_self());
 	int sock = *(int*)socket;
+	free(socket);
     int read_size, read_pos, buffer_size = 256, err_size = 256;
     char request[buffer_size], *message, *pos, err_msg[err_size];
 	const char *api_get, *api_set;
@@ -1629,7 +1697,6 @@ read:
 		goto write;
     }
 	close(sock);
-	free(socket);
     return NULL;
 err:
 	applog(LOG_ERR, "%s", err_msg);
@@ -1685,6 +1752,7 @@ static void *api_thread(void *userdata)
         if(unlikely(pthread_create(&api_request_thread, NULL, api_request_handler, (void*)psocket)))
         {
             applog(LOG_ERR, "API: Could not create request thread");
+			free(psocket);
         }
 		usleep(100000);
     }
