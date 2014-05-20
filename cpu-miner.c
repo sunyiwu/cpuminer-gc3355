@@ -43,7 +43,7 @@
 #define PROGRAM_NAME		"minerd"
 #define DEF_RPC_URL		"http://127.0.0.1:9332/"
 
-#define MINER_VERSION	"v1.0d"
+#define MINER_VERSION	"v1.0e"
 
 enum workio_commands {
 	WC_SUBMIT_WORK,
@@ -67,18 +67,24 @@ enum sha256_algos {
 #define API_QUEUE 16
 #define API_GET_STATS "stats"
 #define API_SET_FREQUENCY "frequency"
-#define API_MINER_START_TIME "start_time"
+#define API_START_TIME "start_time"
 #define API_DEVICE_SERIAL "serial"
 #define API_DEVICES "devices"
 #define API_CHIPS "chips"
 #define API_LAST_SHARE "last_share"
-#define API_CHIP_ACCEPTED "accepted"
-#define API_CHIP_REJECTED "rejected"
-#define API_CHIP_HW_ERRORS "hw_errors"
-#define API_CHIP_FREQUENCY "frequency"
-#define API_CHIP_HASHRATE "hashrate"
-#define API_CHIP_SHARES "shares"
+#define API_ACCEPTED "accepted"
+#define API_REJECTED "rejected"
+#define API_HW_ERRORS "hw_errors"
+#define API_FREQUENCY "frequency"
+#define API_HASHRATE "hashrate"
+#define API_SHARES "shares"
 #define API_AUTOTUNE "autotune"
+#define API_POOLS "pools"
+#define API_POOL_URL "url"
+#define API_POOL_USER "user"
+#define API_POOL_PASS "pass"
+#define API_POOL_PRIORITY "priority"
+#define API_POOL_ACTIVE "active"
 #define REFRESH_INTERVAL 2
 
 struct gc3355_dev {
@@ -249,6 +255,7 @@ struct work_items
 	uint32_t nonce;
 	uint16_t work_id;
 	uint16_t id;
+	double diff;
 };
 
 static bool can_work = false;
@@ -271,6 +278,11 @@ struct pool_details
 	bool active;
 	bool tried;
 	bool usable;
+	
+	unsigned int time_start;
+	unsigned int accepted;
+	unsigned int rejected;
+	unsigned long long shares;
 };
 
 static struct pool_details *gpool;
@@ -480,6 +492,7 @@ static uint16_t push_work_item(struct work_items *items, struct work *work)
 	item->nonce = work->data[19];
 	item->thr_id = work->thr_id;
 	item->work_id = items->id;
+	item->diff = stratum->job.diff;
 	prev = pop_work_item(items, item->work_id);
 	if(prev != NULL)
 		free(prev);
@@ -877,9 +890,13 @@ static void share_result(int result, const char *reason, uint16_t work_id)
 	int chip_id, thr_id;
 	struct timeval timestr;
 	struct work_items *work_item;
+	struct pool_details *pool;
 	pthread_mutex_lock(&work_items_lock);
 	work_item = pop_work_item(work_items, work_id);
 	pthread_mutex_unlock(&work_items_lock);
+	pthread_mutex_lock(&pool_lock);
+	pool = get_active_pool(pools);
+	pthread_mutex_unlock(&pool_lock);
 	if(work_item == NULL)
 	{
 		applog(LOG_ERR, "Invalid work_id: %x", work_id);
@@ -895,12 +912,17 @@ static void share_result(int result, const char *reason, uint16_t work_id)
 		{
 			gc3355_devs[thr_id].autotune_accepted[chip_id]++;
 		}
+		pool->accepted++;
 	}
 	else
+	{
 		gc3355_devs[thr_id].rejected[chip_id]++;
+		pool->rejected++;
+	}
 	gettimeofday(&timestr, NULL);
 	gc3355_devs[thr_id].last_share[chip_id] = timestr.tv_sec;
-	gc3355_devs[thr_id].shares[chip_id] += stratum->job.diff;
+	gc3355_devs[thr_id].shares[chip_id] += (int) work_item->diff;
+	pool->shares += (int) work_item->diff;
 	pthread_mutex_unlock(&stats_lock);
 	applog(LOG_INFO, "%s %08x GSD %d@%d",
 	   result ? "Accepted" : "Rejected",
@@ -1300,8 +1322,11 @@ login:
 			}
 			memset(g_work.xnonce2, 0, 8);
 			if(g_work_update_time)
-			{
 				g_work_update_time = 0;
+			if(!pool->time_start)
+			{
+				gettimeofday(&timestr, NULL);
+				pool->time_start = timestr.tv_sec;
 			}
 		}
 		can_work = true;
@@ -1420,11 +1445,33 @@ wait:
 #ifndef WIN32
 static bool api_parse_get(const char *api_get, json_t *obj, json_t *err)
 {
-	json_t *dev, *devs, *chips, *chip;
+	json_t *dev, *devs, *chips, *chip, *jpools, *jpool;
 	int i, j;
+	static struct pool_details *pool;
 	if(!strcmp(api_get, API_GET_STATS))
 	{
-		json_object_set_new(obj, API_MINER_START_TIME, json_integer(gc3355_time_start));
+		jpools = json_array();
+		pthread_mutex_lock(&pool_lock);
+		list_for_each_entry(pool, &pools->list, list)
+		{
+			if(pool != NULL)
+			{
+				jpool = json_object();
+				json_object_set_new(jpool, API_START_TIME, json_integer(pool->time_start));
+				json_object_set_new(jpool, API_ACCEPTED, json_integer(pool->accepted));
+				json_object_set_new(jpool, API_REJECTED, json_integer(pool->rejected));
+				json_object_set_new(jpool, API_SHARES, json_integer(pool->shares));
+				json_object_set_new(jpool, API_POOL_URL, json_string(pool->rpc_url));
+				json_object_set_new(jpool, API_POOL_USER, json_string(pool->rpc_user));
+				json_object_set_new(jpool, API_POOL_PASS, json_string(pool->rpc_pass));
+				json_object_set_new(jpool, API_POOL_PRIORITY, json_integer(pool->prio));
+				json_object_set_new(jpool, API_POOL_ACTIVE, json_integer(pool->active ? 1 : 0));
+				json_array_append_new(jpools, jpool);
+			}
+		}
+		json_object_set_new(obj, API_POOLS, jpools);
+		pthread_mutex_unlock(&pool_lock);
+		json_object_set_new(obj, API_START_TIME, json_integer(gc3355_time_start));
 		devs = json_object();
 		pthread_mutex_lock(&stats_lock);
 		for(i = 0; i < opt_n_threads; i++)
@@ -1434,12 +1481,12 @@ static bool api_parse_get(const char *api_get, json_t *obj, json_t *err)
 			for(j = 0; j < gc3355_devs[i].chips; j++)
 			{
 				chip = json_object();
-				json_object_set_new(chip, API_CHIP_ACCEPTED, json_integer(gc3355_devs[i].accepted[j]));
-				json_object_set_new(chip, API_CHIP_REJECTED, json_integer(gc3355_devs[i].rejected[j]));
-				json_object_set_new(chip, API_CHIP_HW_ERRORS, json_integer(gc3355_devs[i].total_hwe[j]));
-				json_object_set_new(chip, API_CHIP_FREQUENCY, json_integer(gc3355_devs[i].freq[j]));
-				json_object_set_new(chip, API_CHIP_HASHRATE, json_integer(gc3355_devs[i].hashrate[j]));
-				json_object_set_new(chip, API_CHIP_SHARES, json_integer(gc3355_devs[i].shares[j]));
+				json_object_set_new(chip, API_ACCEPTED, json_integer(gc3355_devs[i].accepted[j]));
+				json_object_set_new(chip, API_REJECTED, json_integer(gc3355_devs[i].rejected[j]));
+				json_object_set_new(chip, API_HW_ERRORS, json_integer(gc3355_devs[i].total_hwe[j]));
+				json_object_set_new(chip, API_FREQUENCY, json_integer(gc3355_devs[i].freq[j]));
+				json_object_set_new(chip, API_HASHRATE, json_integer(gc3355_devs[i].hashrate[j]));
+				json_object_set_new(chip, API_SHARES, json_integer(gc3355_devs[i].shares[j]));
 				json_object_set_new(chip, API_LAST_SHARE, json_integer(gc3355_devs[i].last_share[j]));
 				json_object_set_new(chip, API_AUTOTUNE, json_integer(opt_gc3355_autotune ? (gc3355_devs[i].adjust[j] > 0 ? 1 : -1) : 0));
 				json_array_append_new(chips, chip);
@@ -2012,9 +2059,9 @@ int main(int argc, char *argv[])
 	
 	opt_n_threads = 0;
 
+	device_list = gc3355_get_device_list();
 	if(opt_gc3355_detect)
 	{
-		device_list = gc3355_get_device_list();
 		opt_n_threads = gc3355_get_device_count(device_list);
 	}
 	else if (gc3355_devname != NULL)

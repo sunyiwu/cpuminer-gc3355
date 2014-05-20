@@ -233,6 +233,21 @@ static int gc3355_get_device_count(struct gc3355_devices *device_list)
 	return count;
 }
 
+static struct gc3355_devices *gc3355_get_device(struct gc3355_devices *device_list, char *path)
+{
+	struct gc3355_devices *device, *tmp, *ret = NULL;
+	list_for_each_entry_safe(device, tmp, &device_list->list, list)
+	{
+		if(!strcmp(device->path, path))
+		{
+			list_del(&device->list);
+			ret = device;
+			break;
+		}
+	}
+	return ret;
+}
+
 static struct gc3355_devices *gc3355_get_next_device(struct gc3355_devices *device_list)
 {
 	struct gc3355_devices *device, *tmp, *ret = NULL;
@@ -250,6 +265,16 @@ static void gc3355_free_device(struct gc3355_devices *device)
 	free(device->path);
 	free(device->serial);
 	free(device);
+}
+
+static void gc3355_free_device_list(struct gc3355_devices *device_list)
+{
+	struct gc3355_devices *device, *tmp;
+	list_for_each_entry_safe(device, tmp, &device_list->list, list)
+	{
+		list_del(&device->list);
+		gc3355_free_device(device);
+	}
 }
 
 /* external functions */
@@ -1032,6 +1057,7 @@ static int create_gc3355_miner_threads(struct thr_info *thr_info, int opt_n_thre
 	struct chip_freq *chip_freq_curr;
 	struct chip_freq *chip_freq_new;
 	struct timeval timestr;
+	struct gc3355_devices *device;
 	
 	gettimeofday(&timestr, NULL);
 	gc3355_time_start = timestr.tv_sec;
@@ -1109,7 +1135,7 @@ static int create_gc3355_miner_threads(struct thr_info *thr_info, int opt_n_thre
 		
 		if(opt_gc3355_detect)
 		{
-			struct gc3355_devices *device = gc3355_get_next_device(device_list);
+			device = gc3355_get_next_device(device_list);
 			gc3355_devs[i].devname = strdup(device->path);
 			gc3355_devs[i].serial = strdup(device->serial);
 			gc3355_free_device(device);
@@ -1120,9 +1146,15 @@ static int create_gc3355_miner_threads(struct thr_info *thr_info, int opt_n_thre
 			if(p != NULL)
 				*p = '\0';
 			gc3355_devs[i].devname = strdup(pd);
+			device = gc3355_get_device(device_list, gc3355_devs[i].devname);
+			if(device != NULL)
+			{
+				gc3355_devs[i].serial = strdup(device->serial);
+				gc3355_free_device(device);
+			}
 			pd = p + 1;
 		}
-
+		
 		pthread_attr_t attrs;
 		pthread_attr_init(&attrs);
 		if(unlikely(pthread_attr_setdetachstate(&attrs, PTHREAD_CREATE_DETACHED)))
@@ -1139,5 +1171,7 @@ static int create_gc3355_miner_threads(struct thr_info *thr_info, int opt_n_thre
 	}
 	if(gc3355_devname != NULL)
 		free(gc3355_devname);
+	if(!opt_gc3355_detect)
+		gc3355_free_device_list(device_list);
 	return 0;
 }
