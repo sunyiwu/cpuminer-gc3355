@@ -123,25 +123,42 @@ void applog(int prio, const char *fmt, ...)
 
 	len = 40 + strlen(fmt) + 2;
 	f = alloca(len);
-	sprintf(f, "[%d-%02d-%02d %02d:%02d:%02d] %s\n",
-		tm.tm_year + 1900,
-		tm.tm_mon + 1,
-		tm.tm_mday,
-		tm.tm_hour,
-		tm.tm_min,
-		tm.tm_sec,
-		fmt);
+	if(opt_debug)
+	{
+		struct timeval timestr;
+		gettimeofday(&timestr, NULL);
+		sprintf(f, "[%d-%02d-%02d %02d:%02d:%02d.%04d] %s\n",
+			tm.tm_year + 1900,
+			tm.tm_mon + 1,
+			tm.tm_mday,
+			tm.tm_hour,
+			tm.tm_min,
+			tm.tm_sec,
+			(int)(timestr.tv_usec / 100.0),
+			fmt);
+	}
+	else
+	{
+		sprintf(f, "[%d-%02d-%02d %02d:%02d:%02d] %s\n",
+			tm.tm_year + 1900,
+			tm.tm_mon + 1,
+			tm.tm_mday,
+			tm.tm_hour,
+			tm.tm_min,
+			tm.tm_sec,
+			fmt);
+	}
 	if(opt_log)
 	{
 		pthread_mutex_lock(&applog_lock);
 		FILE *fp; 
-		fp = fopen(LOG_NAME, "a");
+		fp = fopen(log_path, "a");
 		vfprintf(fp, f, ap);
 		fflush(fp);
 		fclose(fp);
 		pthread_mutex_unlock(&applog_lock);
 	}
-	if(!opt_curses)
+	if(!opt_curses || display == NULL)
 	{
 		pthread_mutex_lock(&applog_lock);
 		vfprintf(stderr, f, ap);

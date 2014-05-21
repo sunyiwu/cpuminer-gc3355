@@ -193,7 +193,7 @@ extern struct display_window* new_pad(unsigned int rows, unsigned int cols, unsi
 extern void del_win(struct display_window *win);
 extern bool opt_curses;
 extern bool opt_log;
-#define LOG_NAME "cpuminer-gc3355.log"
+extern char *log_path;
 #define TUI_SCROLL 2
 #define TUI_MIN_LOG 5
 #define TUI_MAX_STATS 20
