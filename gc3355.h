@@ -92,18 +92,18 @@ typedef unsigned int speed_t;
 #define GC3355_BLADE_STR "GC3355 40-chip G-Blade Miner"
 #define GC3355_NONE_STR "Unknown GC3355 Miner"
 
-struct chip_freq
+struct chip_frequency_list
 {
-	struct chip_freq *next;
-	char chip_id;
-	unsigned short freq;
+	struct list_head list;
+	uint8_t chip_id;
+	uint16_t freq;
 };
 
-struct dev_freq
+struct device_frequency_list
 {
-	struct dev_freq *next;
+	struct list_head list;
 	char *devname;
-	struct chip_freq *chips;
+ 	struct chip_frequency_list chip_list;
 };
 
 struct gc3355_devices
@@ -114,7 +114,66 @@ struct gc3355_devices
 };
 
 static uint16_t can_start = 0;
-static struct dev_freq *dev_freq_root;
+static struct device_frequency_list *frequency_list;
+
+static struct device_frequency_list* init_device_frequency_list()
+{
+	struct device_frequency_list *list = calloc(1, sizeof(struct device_frequency_list));
+	INIT_LIST_HEAD(&list->list);
+	INIT_LIST_HEAD(&list->chip_list.list);
+	return list;
+}
+
+static void add_frequency(struct device_frequency_list *list, char *devname, uint16_t chip_id, uint16_t freq)
+{
+	struct device_frequency_list *device, *new_device;
+	struct chip_frequency_list *chip, *new_chip;
+	list_for_each_entry(device, &list->list, list)
+	{
+		if(!strcmp(device->devname, devname))
+		{
+			list_for_each_entry(chip, &device->chip_list.list, list)
+			{
+				if(chip->chip_id == chip_id)
+				{
+					chip->freq = freq;
+					goto out;
+				}
+			}
+new_chip:
+			new_chip = calloc(1, sizeof(struct chip_frequency_list));
+			new_chip->chip_id = chip_id;
+			new_chip->freq = freq;
+			list_add(&new_chip->list, &device->chip_list.list);
+			goto out;
+		}
+	}
+	new_device = calloc(1, sizeof(struct device_frequency_list));
+	new_device->devname = strdup(devname);
+	INIT_LIST_HEAD(&new_device->chip_list.list);
+	list_add(&new_device->list, &list->list);
+	device = new_device;
+	goto new_chip;
+out:
+	return;
+}
+
+static void free_device_frequency_list(struct device_frequency_list *list)
+{
+	struct device_frequency_list *device, *tmp_device;
+	struct chip_frequency_list *chip, *tmp_chip;
+	list_for_each_entry_safe(device, tmp_device, &list->list, list)
+	{
+		list_for_each_entry_safe(chip, tmp_chip, &device->chip_list.list, list)
+		{
+			list_del(&chip->list);
+			free(chip);
+		}
+		list_del(&device->list);
+		free(device->devname);
+		free(device);
+	}	
+}
 
 #ifdef HAVE_LIBUDEV
 static struct gc3355_devices *gc3355_get_device_list()
@@ -625,8 +684,8 @@ static void *gc3355_thread(void *userdata)
 	unsigned char *scratchbuf = NULL;
 	int i, rc;
 	struct timeval timestr;
-	struct dev_freq *dev_freq_curr;
-	struct chip_freq *chip_freq_curr;
+	struct device_frequency_list *device;
+	struct chip_frequency_list *chip;
 	
 	work.thr_id = thr_id;
 	gettimeofday(&timestr, NULL);
@@ -690,29 +749,32 @@ static void *gc3355_thread(void *userdata)
 	gc3355->hashrate = calloc(gc3355->chips, sizeof(double));
 	gc3355->shares = calloc(gc3355->chips, sizeof(unsigned long long));
 	gc3355->last_share = calloc(gc3355->chips, sizeof(unsigned int));
+	list_for_each_entry(device, &frequency_list->list, list)
+	{
+		if(!strcmp(device->devname, gc3355->devname) || (gc3355->serial != NULL && !strcmp(device->devname, gc3355->serial)))
+		{
+			list_for_each_entry(chip, &device->chip_list.list, list)
+			{
+				if(chip->chip_id == 0xf)
+				{
+					for(i = 0; i < gc3355->chips; i++)
+					{
+						if(!gc3355->freq[i])
+							gc3355->freq[i] = fix_freq(chip->freq);
+					}
+				}
+				else
+					gc3355->freq[chip->chip_id % GC3355_MAX_CHIPS] = fix_freq(chip->freq);
+			}
+		}
+	}
 	for(i = 0; i < gc3355->chips; i++)
 	{
 		gc3355->adjust[i] = GC3355_MAX_FREQ;
 		gc3355->last_share[i] = timestr.tv_sec;
-		gc3355->freq[i] = fix_freq(opt_frequency);
+		if(!gc3355->freq[i])
+			gc3355->freq[i] = fix_freq(opt_frequency);
 	}
-	for(dev_freq_curr = dev_freq_root; dev_freq_curr != NULL; dev_freq_curr = dev_freq_curr->next)
-	{
-		if(dev_freq_curr->devname != NULL && (!strcmp(gc3355->devname, dev_freq_curr->devname) || (gc3355->serial != NULL && !strcmp(gc3355->serial, dev_freq_curr->devname))))
-		{
-			for(chip_freq_curr = dev_freq_curr->chips; chip_freq_curr != NULL; chip_freq_curr = chip_freq_curr->next)
-			{
-				if(chip_freq_curr->chip_id == -1)
-				{
-					for(i = 0; i < gc3355->chips; i++) gc3355->freq[i] = fix_freq(chip_freq_curr->freq);
-				}
-				else gc3355->freq[chip_freq_curr->chip_id % GC3355_MAX_CHIPS] = fix_freq(chip_freq_curr->freq);
-				if(chip_freq_curr->next == NULL) break;
-			}
-		}
-		if(dev_freq_curr->next == NULL) break;
-	}
-	
 	if(!is_global_freq(gc3355))
 	{
 		for(i = 0; i < gc3355->chips; i++)
@@ -732,23 +794,7 @@ static void *gc3355_thread(void *userdata)
 	gc3355->ready = true;
 	if(can_start == opt_n_threads)
 	{
-		for(dev_freq_curr = dev_freq_root; dev_freq_curr != NULL;)
-		{
-			struct dev_freq *dev_freq_tmp = dev_freq_curr->next;
-			if(dev_freq_curr->chips != NULL)
-			{
-				for(chip_freq_curr = dev_freq_curr->chips->next; chip_freq_curr != NULL;)
-				{
-					struct chip_freq *chip_freq_tmp = chip_freq_curr->next;
-					free(chip_freq_curr);
-					chip_freq_curr = chip_freq_tmp;
-				}
-				free(dev_freq_curr->chips);
-				free(dev_freq_curr->devname);
-			}
-			free(dev_freq_curr);
-			dev_freq_curr = dev_freq_tmp;
-		}
+		free_device_frequency_list(frequency_list);
 	}
 	while(1)
 	{
@@ -1049,81 +1095,34 @@ static int create_gc3355_miner_threads(struct thr_info *thr_info, int opt_n_thre
 {
 	struct thr_info *thr;
 	int i;
-	unsigned short freq;
-	unsigned char found, chip_id;
-	char *p, *pd, *end, *str, *end2, *tmp;
-	struct dev_freq *dev_freq_curr;
-	struct dev_freq *dev_freq_new;
-	struct chip_freq *chip_freq_curr;
-	struct chip_freq *chip_freq_new;
+	uint16_t freq;
+	uint8_t chip_id;
+	char *p, *pd, *end, *str, *end2, *tmp, *devname;
 	struct timeval timestr;
 	struct gc3355_devices *device;
 	
 	gettimeofday(&timestr, NULL);
 	gc3355_time_start = timestr.tv_sec;
 	
-	i = 0;
-	dev_freq_root = calloc(1, sizeof(struct dev_freq));
+	frequency_list = init_device_frequency_list();
+	
 	if(opt_gc3355_frequency != NULL)
 	{
 		pd = opt_gc3355_frequency;
 		while((str = strtok_r(pd, ",", &end)))
 		{
-			//devname
-			tmp = strtok_r(str, ":", &end2);
-			found = 0;
-			for(dev_freq_curr = dev_freq_root; dev_freq_curr != NULL; dev_freq_curr = dev_freq_curr->next)
-			{
-				if(dev_freq_curr->devname != NULL && !strcmp(dev_freq_curr->devname, tmp))
-				{
-					found = 1;
-					break;
-				}
-				if(dev_freq_curr->next == NULL) break;
-			}
-			// freq
-			freq = atoi(strtok_r(NULL, ":", &end2));
-			if(!found)
-			{
-				if(dev_freq_curr->devname != NULL)
-				{
-					dev_freq_new = calloc(1, sizeof(struct dev_freq));
-					dev_freq_curr->next = dev_freq_new;
-				}
-				else dev_freq_new = dev_freq_curr;
-				dev_freq_new->devname = strdup(tmp);
-				dev_freq_new->chips = calloc(1, sizeof(struct chip_freq));
-				dev_freq_new->chips->chip_id = -2;
-				dev_freq_curr = dev_freq_new;
-			}
-			// chip_id
-			if((tmp = strtok_r(NULL, ":", &end2)))
-			{
-				chip_id = atoi(tmp);
-				found = 0;
-				for(chip_freq_curr = dev_freq_curr->chips; chip_freq_curr->next != NULL; chip_freq_curr = chip_freq_curr->next)
-				{
-					if(chip_freq_curr->chip_id == chip_id)
-					{
-						found = 1;
-						break;
-					}
-				}
-				if(!found)
-				{
-					chip_freq_new = calloc(1, sizeof(struct chip_freq));
-					chip_freq_curr->next = chip_freq_new;
-					chip_freq_new->chip_id = chip_id;
-					chip_freq_new->freq = freq;
-				}
-			}
-			else
-			{
-				dev_freq_curr->chips->chip_id = -1;
-				dev_freq_curr->chips->freq = freq;
-			}
+			devname = strtok_r(str, ":", &end2);
+			tmp = strtok_r(NULL, ":", &end2);
+			if(tmp == NULL)
+				goto next;
+			freq = atoi(tmp);
+			chip_id = 0xf;
+			tmp = strtok_r(NULL, ":", &end2);
+			if(tmp != NULL)
+				chip_id = atoi(tmp) % GC3355_MAX_CHIPS;
+			add_frequency(frequency_list, devname, chip_id, freq);
+	next:
 			pd = end;
-			i++;
 		}
 	}
 	

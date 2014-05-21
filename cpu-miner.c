@@ -67,6 +67,7 @@ enum sha256_algos {
 #define API_QUEUE 16
 #define API_GET_STATS "stats"
 #define API_START_TIME "start_time"
+#define API_STOP_TIME "stop_time"
 #define API_DEVICE_SERIAL "serial"
 #define API_DEVICES "devices"
 #define API_CHIPS "chips"
@@ -80,6 +81,8 @@ enum sha256_algos {
 #define API_AUTOTUNE "autotune"
 #define API_POOL "pool"
 #define API_POOLS "pools"
+#define API_POOL_STATS "stats"
+#define API_POOL_STATS_ID "stats_id"
 #define API_POOL_URL "url"
 #define API_POOL_USER "user"
 #define API_POOL_PASS "pass"
@@ -268,6 +271,17 @@ static pthread_mutex_t g_work_lock;
 static struct work_items *work_items;
 static pthread_mutex_t work_items_lock;
 
+struct pool_stats
+{
+	struct list_head list;
+	unsigned int time_start;
+	unsigned int time_stop;
+	unsigned int accepted;
+	unsigned int rejected;
+	unsigned long long shares;
+	unsigned int id;
+};
+
 struct pool_details
 {
 	struct list_head list;
@@ -278,11 +292,8 @@ struct pool_details
 	bool active;
 	bool tried;
 	bool usable;
-	
-	unsigned int time_start;
-	unsigned int accepted;
-	unsigned int rejected;
-	unsigned long long shares;
+	unsigned int id;
+	struct pool_stats stats;
 };
 
 static struct pool_details *gpool;
@@ -300,12 +311,14 @@ static struct pool_details* init_pool_details()
 {
 	struct pool_details *pools = calloc(1, sizeof(struct pool_details));
 	INIT_LIST_HEAD(&pools->list);
+	INIT_LIST_HEAD(&pools->stats.list);
 	return pools;
 }
 
 static struct pool_details* new_pool(bool empty)
 {
 	struct pool_details *pool = calloc(1, sizeof(struct pool_details));
+	INIT_LIST_HEAD(&pool->stats.list);
 	if(empty)
 	{
 		pool->rpc_url = DEF_RPC_URL;
@@ -388,6 +401,30 @@ static void add_pool(struct pool_details *pools, struct pool_details *pool)
 	}
 	list_add_tail(&pool->list, &pools->list);
 	gpool = NULL;
+}
+
+static struct pool_stats* new_pool_stats(struct pool_details *pool)
+{
+	struct pool_stats *pool_stats;
+	pool_stats = calloc(1, sizeof(struct pool_stats));
+	pool->id++;
+	pool_stats->id = pool->id;
+	list_add(&pool_stats->list, &pool->stats.list);
+	return pool_stats;
+}
+
+static struct pool_stats* get_pool_stats(struct pool_details *pool)
+{
+	struct pool_stats *pool_stats, *ret = NULL;
+	list_for_each_entry(pool_stats, &pool->stats.list, list)
+	{
+		if(pool->id == pool_stats->id)
+		{
+			ret = pool_stats;
+			break;
+		}
+	}
+	return ret;
 }
 
 static int get_pool_count(struct pool_details *pools)
@@ -912,11 +949,13 @@ static void share_result(int result, const char *reason, uint16_t work_id)
 	struct timeval timestr;
 	struct work_items *work_item;
 	struct pool_details *pool;
+	struct pool_stats *pool_stats;
 	pthread_mutex_lock(&work_items_lock);
 	work_item = pop_work_item(work_items, work_id);
 	pthread_mutex_unlock(&work_items_lock);
 	pthread_mutex_lock(&pool_lock);
 	pool = get_active_pool(pools);
+	pool_stats = get_pool_stats(pool);
 	pthread_mutex_unlock(&pool_lock);
 	if(work_item == NULL)
 	{
@@ -933,17 +972,17 @@ static void share_result(int result, const char *reason, uint16_t work_id)
 		{
 			gc3355_devs[thr_id].autotune_accepted[chip_id]++;
 		}
-		pool->accepted++;
+		pool_stats->accepted++;
 	}
 	else
 	{
 		gc3355_devs[thr_id].rejected[chip_id]++;
-		pool->rejected++;
+		pool_stats->rejected++;
 	}
 	gettimeofday(&timestr, NULL);
 	gc3355_devs[thr_id].last_share[chip_id] = timestr.tv_sec;
 	gc3355_devs[thr_id].shares[chip_id] += (int) work_item->diff;
-	pool->shares += (int) work_item->diff;
+	pool_stats->shares += (int) work_item->diff;
 	pthread_mutex_unlock(&stats_lock);
 	applog(LOG_INFO, "%s %08x GSD %d@%d",
 	   result ? "Accepted" : "Rejected",
@@ -1271,7 +1310,8 @@ static void *stratum_thread(void *userdata)
 	char *s;
 	int i, failures, restarted;
 	struct timeval timestr;
-	static struct pool_details *pool, *main_pool;
+	struct pool_details *pool, *main_pool;
+	struct pool_stats *pool_stats;
 	bool switch_lock = false, switched = false, reconnect = false;
 	uint32_t work_id;
 
@@ -1344,11 +1384,19 @@ login:
 			memset(g_work.xnonce2, 0, 8);
 			if(g_work_update_time)
 				g_work_update_time = 0;
-			if(!pool->time_start)
+			gettimeofday(&timestr, NULL);
+			pthread_mutex_lock(&pool_lock);
+			pool_stats = get_pool_stats(pool);
+			if(pool_stats != NULL)
 			{
-				gettimeofday(&timestr, NULL);
-				pool->time_start = timestr.tv_sec;
+				pool_stats->time_stop = timestr.tv_sec;
+				if(pool_stats->shares)
+					pool_stats = new_pool_stats(pool);
 			}
+			else
+				pool_stats = new_pool_stats(pool);
+			pool_stats->time_start = timestr.tv_sec;
+			pthread_mutex_unlock(&pool_lock);
 		}
 		can_work = true;
 		restarted = 0;
@@ -1487,29 +1535,37 @@ wait:
 #ifndef WIN32
 static bool api_parse_get(const char *api_get, json_t *obj, json_t *err)
 {
-	json_t *dev, *devs, *chips, *chip, *jpools, *jpool;
+	json_t *dev, *devs, *chips, *chip, *jpools, *jpool, *jpool_stats, *stats;
 	int i, j;
-	static struct pool_details *pool;
+	struct pool_details *pool;
+	struct pool_stats *pool_stats;
 	if(!strcmp(api_get, API_GET_STATS))
 	{
 		jpools = json_array();
 		pthread_mutex_lock(&pool_lock);
 		list_for_each_entry(pool, &pools->list, list)
 		{
-			if(pool != NULL)
+			jpool = json_object();
+			json_object_set_new(jpool, API_POOL_URL, json_string(pool->rpc_url));
+			json_object_set_new(jpool, API_POOL_USER, json_string(pool->rpc_user));
+			json_object_set_new(jpool, API_POOL_PASS, json_string(pool->rpc_pass));
+			json_object_set_new(jpool, API_POOL_PRIORITY, json_integer(pool->prio));
+			json_object_set_new(jpool, API_POOL_ACTIVE, json_integer(pool->active ? 1 : 0));
+			jpool_stats = json_array();
+			list_for_each_entry(pool_stats, &pool->stats.list, list)
 			{
-				jpool = json_object();
-				json_object_set_new(jpool, API_START_TIME, json_integer(pool->time_start));
-				json_object_set_new(jpool, API_ACCEPTED, json_integer(pool->accepted));
-				json_object_set_new(jpool, API_REJECTED, json_integer(pool->rejected));
-				json_object_set_new(jpool, API_SHARES, json_integer(pool->shares));
-				json_object_set_new(jpool, API_POOL_URL, json_string(pool->rpc_url));
-				json_object_set_new(jpool, API_POOL_USER, json_string(pool->rpc_user));
-				json_object_set_new(jpool, API_POOL_PASS, json_string(pool->rpc_pass));
-				json_object_set_new(jpool, API_POOL_PRIORITY, json_integer(pool->prio));
-				json_object_set_new(jpool, API_POOL_ACTIVE, json_integer(pool->active ? 1 : 0));
-				json_array_append_new(jpools, jpool);
+				stats = json_object();
+				json_object_set_new(stats, API_START_TIME, json_integer(pool_stats->time_start));
+				json_object_set_new(stats, API_STOP_TIME, json_integer(pool_stats->time_stop));
+				json_object_set_new(stats, API_ACCEPTED, json_integer(pool_stats->accepted));
+				json_object_set_new(stats, API_REJECTED, json_integer(pool_stats->rejected));
+				json_object_set_new(stats, API_SHARES, json_integer(pool_stats->shares));
+				json_object_set_new(stats, API_POOL_STATS_ID, json_integer(pool_stats->id));
+				json_array_append_new(jpool_stats, stats);
 			}
+			json_object_set_new(jpool, API_POOL_STATS, jpool_stats);
+			json_object_set_new(jpool, API_POOL_STATS_ID, json_integer(pool->id));
+			json_array_append_new(jpools, jpool);
 		}
 		json_object_set_new(obj, API_POOLS, jpools);
 		pthread_mutex_unlock(&pool_lock);
